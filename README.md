@@ -18,7 +18,7 @@ Unlike traditional static signature makers, this plugin utilizes the **Zydis Dis
 
 ## 🛠 Installation
 
-1.  **Download**: Grab the latest `SigMaker.dll` from the [Releases](link-to-your-release-here) section.
+1.  **Download**: Grab the latest `SigMaker.dll` from the [Releases](https://github.com/gmax29/SigMakerPlugin/tree/main/Releases) section.
 2.  **Move to Plugins**: Copy the DLL into your Cheat Engine `plugins` folder:
     * Example: `C:\Program Files\Cheat Engine\plugins`
 3.  **Enable**: 
