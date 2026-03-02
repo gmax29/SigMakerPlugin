@@ -23,6 +23,12 @@ struct SignatureData {
     std::string cpp_mask;
 };
 
+struct MemoryRegion {
+    ULONG_PTR base;
+    SIZE_T size;
+    std::vector<uint8_t> buffer;
+};
+
 void set_clipboard(const std::string& str) {
     if (!OpenClipboard(nullptr)) return;
 
@@ -45,47 +51,119 @@ void set_clipboard(const std::string& str) {
     }
 }
 
-bool get_search_region(HANDLE handle, ULONG_PTR address, ULONG_PTR& out_base, SIZE_T& out_size) {
-    MEMORY_BASIC_INFORMATION mbi;
-    if (!VirtualQueryEx(handle, reinterpret_cast<LPCVOID>(address), &mbi, sizeof(mbi))) return false;
-    if (mbi.State != MEM_COMMIT) return false;
+bool get_executable_regions(HANDLE handle, ULONG_PTR address, std::vector<MemoryRegion>& out_regions, ULONG_PTR& out_mod_base) {
+    HMODULE hMods[1024];
+    DWORD cbNeeded;
+    ULONG_PTR modBase = 0;
+    SIZE_T modSize = 0;
 
-    out_base = reinterpret_cast<ULONG_PTR>(mbi.BaseAddress);
-    out_size = mbi.RegionSize;
-    return true;
-}
-
-int count_pattern_matches(const std::vector<uint8_t>& buffer, const std::vector<PatternByte>& pattern) {
-    if (pattern.empty() || buffer.size() < pattern.size()) return 0;
-
-    int matches = 0;
-    for (size_t i = 0; i <= buffer.size() - pattern.size(); ++i) {
-        bool match = true;
-        for (size_t j = 0; j < pattern.size(); ++j) {
-            if (!pattern[j].masked && buffer[i + j] != pattern[j].val) {
-                match = false;
-                break;
+    if (EnumProcessModules(handle, hMods, sizeof(hMods), &cbNeeded)) {
+        for (unsigned int i = 0; i < (cbNeeded / sizeof(HMODULE)); i++) {
+            MODULEINFO info;
+            if (GetModuleInformation(handle, hMods[i], &info, sizeof(info))) {
+                ULONG_PTR base = reinterpret_cast<ULONG_PTR>(info.lpBaseOfDll);
+                if (address >= base && address < base + info.SizeOfImage) {
+                    modBase = base;
+                    modSize = info.SizeOfImage;
+                    break;
+                }
             }
         }
-        if (match) {
-            matches++;
-            if (matches > 1) return 2;
+    }
+
+    if (!modBase) {
+        MEMORY_BASIC_INFORMATION mbi;
+        if (VirtualQueryEx(handle, reinterpret_cast<LPCVOID>(address), &mbi, sizeof(mbi))) {
+            modBase = reinterpret_cast<ULONG_PTR>(mbi.AllocationBase);
+            if (!modBase) modBase = reinterpret_cast<ULONG_PTR>(mbi.BaseAddress);
+            modSize = 25 * 1024 * 1024;
+        }
+        else {
+            return false;
         }
     }
-    return matches;
+
+    out_mod_base = modBase;
+    ULONG_PTR current_addr = modBase;
+
+    while (current_addr < modBase + modSize) {
+        MEMORY_BASIC_INFORMATION mbi;
+        if (!VirtualQueryEx(handle, reinterpret_cast<LPCVOID>(current_addr), &mbi, sizeof(mbi))) break;
+
+        bool is_executable = (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY));
+
+        if (mbi.State == MEM_COMMIT && is_executable) {
+            MemoryRegion region;
+            region.base = reinterpret_cast<ULONG_PTR>(mbi.BaseAddress);
+
+            ULONG_PTR offset = region.base - modBase;
+            SIZE_T sizeToRead = mbi.RegionSize;
+            if (offset + sizeToRead > modSize) sizeToRead = modSize - offset;
+
+            region.size = sizeToRead;
+            region.buffer.resize(sizeToRead);
+
+            SIZE_T read;
+            if (ReadProcessMemory(handle, reinterpret_cast<LPCVOID>(region.base), region.buffer.data(), sizeToRead, &read)) {
+                out_regions.push_back(std::move(region));
+            }
+        }
+
+        current_addr = reinterpret_cast<ULONG_PTR>(mbi.BaseAddress) + mbi.RegionSize;
+        if (current_addr < reinterpret_cast<ULONG_PTR>(mbi.BaseAddress)) break;
+    }
+
+    return !out_regions.empty();
+}
+
+int count_pattern_matches(const std::vector<MemoryRegion>& regions, const std::vector<PatternByte>& pattern) {
+    if (pattern.empty()) return 0;
+
+    int total_matches = 0;
+    uint8_t first_byte = pattern[0].val;
+    bool first_masked = pattern[0].masked;
+
+    for (const auto& region : regions) {
+        if (region.buffer.size() < pattern.size()) continue;
+
+        size_t search_limit = region.buffer.size() - pattern.size();
+        const uint8_t* data = region.buffer.data();
+
+        for (size_t i = 0; i <= search_limit; ++i) {
+            if (!first_masked && data[i] != first_byte) continue;
+
+            bool match = true;
+            for (size_t j = 1; j < pattern.size(); ++j) {
+                if (!pattern[j].masked && data[i + j] != pattern[j].val) {
+                    match = false;
+                    break;
+                }
+            }
+            if (match) {
+                total_matches++;
+                if (total_matches > 1) return 2;
+            }
+        }
+    }
+    return total_matches;
 }
 
 bool generate_dynamic_signature(HANDLE handle, ULONG_PTR address, SignatureData& out_sig) {
-    ULONG_PTR region_base = 0;
-    SIZE_T region_size = 0;
+    std::vector<MemoryRegion> regions;
+    ULONG_PTR modBase = 0;
 
-    if (!get_search_region(handle, address, region_base, region_size) || region_size == 0) return false;
+    if (!get_executable_regions(handle, address, regions, modBase)) return false;
 
-    std::vector<uint8_t> buffer(region_size);
-    if (!ReadProcessMemory(handle, reinterpret_cast<LPCVOID>(region_base), buffer.data(), region_size, nullptr)) return false;
+    const MemoryRegion* target_region = nullptr;
+    for (const auto& region : regions) {
+        if (address >= region.base && address < region.base + region.size) {
+            target_region = &region;
+            break;
+        }
+    }
+    if (!target_region) return false;
 
-    size_t local_offset = address - region_base;
-    if (local_offset >= region_size) return false;
+    size_t local_offset = address - target_region->base;
 
     ZydisDecoder decoder;
     BOOL is_wow64 = FALSE;
@@ -108,11 +186,11 @@ bool generate_dynamic_signature(HANDLE handle, ULONG_PTR address, SignatureData&
     size_t decode_offset = 0;
     int matches = 2;
 
-    while (matches > 1 && decode_offset < 128 && (local_offset + decode_offset) < region_size) {
+    while (matches > 1 && decode_offset < 128 && (local_offset + decode_offset) < target_region->size) {
         ZydisDecodedInstruction instruction;
         ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT];
 
-        if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(&decoder, buffer.data() + local_offset + decode_offset, region_size - (local_offset + decode_offset), &instruction, operands))) {
+        if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(&decoder, target_region->buffer.data() + local_offset + decode_offset, target_region->size - (local_offset + decode_offset), &instruction, operands))) {
             break;
         }
 
@@ -133,11 +211,33 @@ bool generate_dynamic_signature(HANDLE handle, ULONG_PTR address, SignatureData&
                 }
             }
 
-            pattern.push_back({ buffer[local_offset + decode_offset + i], mask });
+            pattern.push_back({ target_region->buffer[local_offset + decode_offset + i], mask });
         }
 
         decode_offset += instruction.length;
-        matches = count_pattern_matches(buffer, pattern);
+
+        std::vector<PatternByte> temp_pattern = pattern;
+        while (!temp_pattern.empty() && temp_pattern.back().masked) {
+            temp_pattern.pop_back();
+        }
+
+        matches = count_pattern_matches(regions, temp_pattern);
+
+        if (matches == 1) {
+            pattern = temp_pattern;
+            break;
+        }
+    }
+
+    if (matches > 1) {
+        out_sig.ce_style = "ERROR: Signature is NOT UNIQUE within the 128-byte limit.";
+        out_sig.cpp_pattern = "ERROR: Function too generic / not unique.";
+        out_sig.cpp_mask = "";
+        return true;
+    }
+
+    while (!pattern.empty() && pattern.back().masked) {
+        pattern.pop_back();
     }
 
     for (const auto& pb : pattern) {
@@ -160,7 +260,7 @@ bool generate_dynamic_signature(HANDLE handle, ULONG_PTR address, SignatureData&
     return true;
 }
 
-std::string get_address_string(HANDLE handle, ULONG_PTR address) {
+bool get_module_info(HANDLE handle, ULONG_PTR address, std::string& modName, ULONG_PTR& offset) {
     HMODULE hMods[1024];
     DWORD cbNeeded;
     if (EnumProcessModules(handle, hMods, sizeof(hMods), &cbNeeded)) {
@@ -169,15 +269,18 @@ std::string get_address_string(HANDLE handle, ULONG_PTR address) {
             if (GetModuleInformation(handle, hMods[i], &info, sizeof(info))) {
                 ULONG_PTR modBase = reinterpret_cast<ULONG_PTR>(info.lpBaseOfDll);
                 if (address >= modBase && address < modBase + info.SizeOfImage) {
-                    char modName[MAX_PATH];
-                    GetModuleBaseNameA(handle, hMods[i], modName, sizeof(modName));
-                    ULONG_PTR offset = address - modBase;
-                    return std::format("{} + 0x{:08X} = 0x{:X}", modName, offset, address);
+                    char name[MAX_PATH];
+                    GetModuleBaseNameA(handle, hMods[i], name, sizeof(name));
+                    modName = name;
+                    offset = address - modBase;
+                    return true;
                 }
             }
         }
     }
-    return std::format("0x{:X}", address);
+    modName = "Unknown.exe";
+    offset = 0;
+    return false;
 }
 
 BOOL CE_CONV on_copy_aob(uintptr_t* selected_address) {
@@ -200,7 +303,14 @@ BOOL CE_CONV on_copy_cpp(uintptr_t* selected_address) {
 
 BOOL CE_CONV on_copy_addr(uintptr_t* selected_address) {
     if (!selected_address || !exports.OpenedProcessHandle) return TRUE;
-    set_clipboard(get_address_string(*exports.OpenedProcessHandle, *selected_address));
+    std::string modName;
+    ULONG_PTR offset;
+    if (get_module_info(*exports.OpenedProcessHandle, *selected_address, modName, offset)) {
+        set_clipboard(std::format("{} + 0x{:08X} = 0x{:X}", modName, offset, *selected_address));
+    }
+    else {
+        set_clipboard(std::format("0x{:X}", *selected_address));
+    }
     return TRUE;
 }
 
