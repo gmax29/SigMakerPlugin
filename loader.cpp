@@ -1,3 +1,5 @@
+#define NOMINMAX
+
 #pragma comment(lib, "psapi.lib")
 
 #include "loader.h"
@@ -5,7 +7,17 @@
 #include <string>
 #include <format>
 #include <psapi.h>
+#include <algorithm>
+#include <cmath>
 #include "Zydis.h"
+
+// Configuration constants
+constexpr SIZE_T SHARED_BUFFER_SIZE = 5 * 1024 * 1024;    // 5 MB chunk size for memory reading
+constexpr SIZE_T DEFAULT_MODULE_SIZE = 25 * 1024 * 1024;  // Fallback module size (25 MB)
+constexpr SIZE_T MAX_DECODE_BYTES = 128;
+constexpr size_t MAX_PATTERN_LENGTH = 32;
+constexpr int MAX_ANCHOR_OFFSET = 50;
+constexpr int ANCHOR_STEP = 10;
 
 static CE_EXPORTED_FUNCTIONS exports;
 static CE_DISASSEMBLER_CONTEXT_INIT ctx_aob;
@@ -23,12 +35,37 @@ struct SignatureData {
     std::string cpp_mask;
 };
 
+// Store only base address and size to optimize memory usage during scans
 struct MemoryRegion {
-    ULONG_PTR base;
-    SIZE_T size;
-    std::vector<uint8_t> buffer;
+    ULONG_PTR base = 0;
+    SIZE_T size = 0;
 };
 
+// Retrieves module base address and size for a given memory address
+bool find_module_info(HANDLE handle, ULONG_PTR address, ULONG_PTR& out_base, SIZE_T& out_size, char* out_name = nullptr, size_t name_size = 0) {
+    HMODULE hMods[1024];
+    DWORD cbNeeded;
+
+    if (EnumProcessModules(handle, hMods, sizeof(hMods), &cbNeeded)) {
+        for (unsigned int i = 0; i < (cbNeeded / sizeof(HMODULE)); i++) {
+            MODULEINFO info;
+            if (GetModuleInformation(handle, hMods[i], &info, sizeof(info))) {
+                ULONG_PTR base = reinterpret_cast<ULONG_PTR>(info.lpBaseOfDll);
+                if (address >= base && address < base + info.SizeOfImage) {
+                    out_base = base;
+                    out_size = info.SizeOfImage;
+                    if (out_name && name_size > 0) {
+                        GetModuleBaseNameA(handle, hMods[i], out_name, static_cast<DWORD>(name_size));
+                    }
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+// Safely copies a given string to the Windows clipboard using RAII
 void set_clipboard(const std::string& str) {
     if (!OpenClipboard(nullptr)) return;
 
@@ -39,44 +76,29 @@ void set_clipboard(const std::string& str) {
     EmptyClipboard();
 
     HGLOBAL buf = GlobalAlloc(GMEM_MOVEABLE, str.size() + 1);
-    if (buf) {
-        if (void* locked_mem = GlobalLock(buf)) {
-            std::memcpy(locked_mem, str.c_str(), str.size() + 1);
-            GlobalUnlock(buf);
-            SetClipboardData(CF_TEXT, buf);
-        }
-        else {
-            GlobalFree(buf);
-        }
+    if (!buf) return; // Early exit if allocation fails
+
+    if (void* locked_mem = GlobalLock(buf)) {
+        std::memcpy(locked_mem, str.c_str(), str.size() + 1);
+        GlobalUnlock(buf);
+        SetClipboardData(CF_TEXT, buf);
+    }
+    else {
+        GlobalFree(buf);
     }
 }
 
+// Scans for all committed, executable memory regions within the target module
 bool get_executable_regions(HANDLE handle, ULONG_PTR address, std::vector<MemoryRegion>& out_regions, ULONG_PTR& out_mod_base) {
-    HMODULE hMods[1024];
-    DWORD cbNeeded;
     ULONG_PTR modBase = 0;
     SIZE_T modSize = 0;
 
-    if (EnumProcessModules(handle, hMods, sizeof(hMods), &cbNeeded)) {
-        for (unsigned int i = 0; i < (cbNeeded / sizeof(HMODULE)); i++) {
-            MODULEINFO info;
-            if (GetModuleInformation(handle, hMods[i], &info, sizeof(info))) {
-                ULONG_PTR base = reinterpret_cast<ULONG_PTR>(info.lpBaseOfDll);
-                if (address >= base && address < base + info.SizeOfImage) {
-                    modBase = base;
-                    modSize = info.SizeOfImage;
-                    break;
-                }
-            }
-        }
-    }
-
-    if (!modBase) {
+    if (!find_module_info(handle, address, modBase, modSize)) {
         MEMORY_BASIC_INFORMATION mbi;
         if (VirtualQueryEx(handle, reinterpret_cast<LPCVOID>(address), &mbi, sizeof(mbi))) {
             modBase = reinterpret_cast<ULONG_PTR>(mbi.AllocationBase);
             if (!modBase) modBase = reinterpret_cast<ULONG_PTR>(mbi.BaseAddress);
-            modSize = 25 * 1024 * 1024;
+            modSize = DEFAULT_MODULE_SIZE;
         }
         else {
             return false;
@@ -97,16 +119,11 @@ bool get_executable_regions(HANDLE handle, ULONG_PTR address, std::vector<Memory
             region.base = reinterpret_cast<ULONG_PTR>(mbi.BaseAddress);
 
             ULONG_PTR offset = region.base - modBase;
-            SIZE_T sizeToRead = mbi.RegionSize;
-            if (offset + sizeToRead > modSize) sizeToRead = modSize - offset;
+            SIZE_T sizeToProcess = mbi.RegionSize;
+            if (offset + sizeToProcess > modSize) sizeToProcess = modSize - offset;
 
-            region.size = sizeToRead;
-            region.buffer.resize(sizeToRead);
-
-            SIZE_T read;
-            if (ReadProcessMemory(handle, reinterpret_cast<LPCVOID>(region.base), region.buffer.data(), sizeToRead, &read)) {
-                out_regions.push_back(std::move(region));
-            }
+            region.size = sizeToProcess;
+            out_regions.push_back(region);
         }
 
         current_addr = reinterpret_cast<ULONG_PTR>(mbi.BaseAddress) + mbi.RegionSize;
@@ -116,58 +133,71 @@ bool get_executable_regions(HANDLE handle, ULONG_PTR address, std::vector<Memory
     return !out_regions.empty();
 }
 
-int count_pattern_matches(const std::vector<MemoryRegion>& regions, const std::vector<PatternByte>& pattern) {
+// Evaluates how many times a pattern exists in the target memory.
+// Returns 2 immediately if more than one match is found (early exit optimization).
+int count_pattern_matches(HANDLE handle, const std::vector<MemoryRegion>& regions, const std::vector<PatternByte>& pattern, std::vector<uint8_t>& chunk_buffer) {
     if (pattern.empty()) return 0;
 
     int total_matches = 0;
+    const SIZE_T CHUNK_SIZE = chunk_buffer.size();
+
     uint8_t first_byte = pattern[0].val;
     bool first_masked = pattern[0].masked;
 
     for (const auto& region : regions) {
-        if (region.buffer.size() < pattern.size()) continue;
+        SIZE_T offset = 0;
 
-        size_t search_limit = region.buffer.size() - pattern.size();
-        const uint8_t* data = region.buffer.data();
+        while (offset < region.size) {
+            SIZE_T read_size = (std::min)(CHUNK_SIZE, region.size - offset);
+            SIZE_T bytes_read = 0;
 
-        for (size_t i = 0; i <= search_limit; ++i) {
-            if (!first_masked && data[i] != first_byte) continue;
+            if (!ReadProcessMemory(handle, reinterpret_cast<LPCVOID>(region.base + offset), chunk_buffer.data(), read_size, &bytes_read) || bytes_read == 0) {
+                break;
+            }
 
-            bool match = true;
-            for (size_t j = 1; j < pattern.size(); ++j) {
-                if (!pattern[j].masked && data[i + j] != pattern[j].val) {
-                    match = false;
-                    break;
+            if (bytes_read < pattern.size()) break;
+
+            size_t search_limit = bytes_read - pattern.size();
+            const uint8_t* data = chunk_buffer.data();
+
+            for (size_t i = 0; i <= search_limit; ++i) {
+                if (!first_masked && data[i] != first_byte) continue;
+
+                bool match = true;
+                for (size_t j = 1; j < pattern.size(); ++j) {
+                    if (!pattern[j].masked && data[i + j] != pattern[j].val) {
+                        match = false;
+                        break;
+                    }
+                }
+                if (match) {
+                    total_matches++;
+                    // Early exit: we only care if the signature is unique (1 match) or generic (2+ matches)
+                    if (total_matches > 1) return 2;
                 }
             }
-            if (match) {
-                total_matches++;
-                if (total_matches > 1) return 2;
-            }
+
+            if (read_size <= pattern.size()) break;
+            offset += read_size - (pattern.size() - 1); // Overlap to prevent missing cross-chunk matches
         }
     }
     return total_matches;
 }
 
+// Core function: Generates a unique, update-proof signature using Zydis instruction decoding
 bool generate_dynamic_signature(HANDLE handle, ULONG_PTR address, SignatureData& out_sig) {
     std::vector<MemoryRegion> regions;
     ULONG_PTR modBase = 0;
 
     if (!get_executable_regions(handle, address, regions, modBase)) return false;
 
-    const MemoryRegion* target_region = nullptr;
-    for (const auto& region : regions) {
-        if (address >= region.base && address < region.base + region.size) {
-            target_region = &region;
-            break;
-        }
-    }
-    if (!target_region) return false;
-
-    size_t local_offset = address - target_region->base;
+    // Use thread_local to allocate the 5MB buffer only once per thread, reusing it across clicks
+    static thread_local std::vector<uint8_t> shared_chunk_buffer(SHARED_BUFFER_SIZE);
 
     ZydisDecoder decoder;
     BOOL is_wow64 = FALSE;
 
+    // Initialize Zydis decoder based on process architecture
     if (IsWow64Process(handle, &is_wow64) && is_wow64) {
         ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LEGACY_32, ZYDIS_STACK_WIDTH_32);
     }
@@ -182,67 +212,114 @@ bool generate_dynamic_signature(HANDLE handle, ULONG_PTR address, SignatureData&
         }
     }
 
-    std::vector<PatternByte> pattern;
-    size_t decode_offset = 0;
-    int matches = 2;
+    int best_offset = 0;
+    std::vector<PatternByte> best_pattern;
+    int best_matches = 2;
 
-    while (matches > 1 && decode_offset < 128 && (local_offset + decode_offset) < target_region->size) {
-        ZydisDecodedInstruction instruction;
-        ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT];
+    // Attempt to find a unique anchor by stepping backwards from the target address
+    for (int anchor_offset = 0; anchor_offset >= -MAX_ANCHOR_OFFSET; anchor_offset -= ANCHOR_STEP) {
+        ULONG_PTR current_scan_address = address + anchor_offset;
 
-        if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(&decoder, target_region->buffer.data() + local_offset + decode_offset, target_region->size - (local_offset + decode_offset), &instruction, operands))) {
-            break;
+        std::vector<uint8_t> local_decode_buffer(MAX_DECODE_BYTES);
+        SIZE_T bytes_read = 0;
+        if (!ReadProcessMemory(handle, reinterpret_cast<LPCVOID>(current_scan_address), local_decode_buffer.data(), MAX_DECODE_BYTES, &bytes_read) || bytes_read == 0) {
+            continue;
         }
 
-        for (uint8_t i = 0; i < instruction.length; ++i) {
-            bool mask = false;
+        std::vector<PatternByte> final_pattern;
+        int final_matches = 2;
 
-            if (instruction.raw.disp.size > 0 &&
-                i >= instruction.raw.disp.offset &&
-                i < instruction.raw.disp.offset + instruction.raw.disp.size) {
-                mask = true;
-            }
+        // Phase 0: Try update-proof (mask all disp/imm). Phase 1: Try strict matching if phase 0 is too generic.
+        for (int phase = 0; phase < 2; ++phase) {
+            bool phase_update_proof = (phase == 0);
+            std::vector<PatternByte> pattern;
+            size_t decode_offset = 0;
+            int matches = 2;
 
-            for (int imm_idx = 0; imm_idx < 2; ++imm_idx) {
-                if (instruction.raw.imm[imm_idx].size > 0 && instruction.raw.imm[imm_idx].is_relative &&
-                    i >= instruction.raw.imm[imm_idx].offset &&
-                    i < instruction.raw.imm[imm_idx].offset + instruction.raw.imm[imm_idx].size) {
-                    mask = true;
+            while (matches > 1 && decode_offset < MAX_PATTERN_LENGTH && decode_offset < bytes_read) {
+                ZydisDecodedInstruction instruction;
+                ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT];
+
+                if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(&decoder, local_decode_buffer.data() + decode_offset, bytes_read - decode_offset, &instruction, operands))) {
+                    break;
+                }
+
+                // Masking logic based on Zydis decode data
+                for (uint8_t i = 0; i < instruction.length; ++i) {
+                    bool mask = false;
+
+                    // Mask displacements
+                    if (instruction.raw.disp.size > 0 &&
+                        i >= instruction.raw.disp.offset &&
+                        i < instruction.raw.disp.offset + instruction.raw.disp.size) {
+
+                        if (phase_update_proof) mask = true;
+                    }
+
+                    // Mask immediates
+                    for (int imm_idx = 0; imm_idx < 2; ++imm_idx) {
+                        if (instruction.raw.imm[imm_idx].size > 0 &&
+                            i >= instruction.raw.imm[imm_idx].offset &&
+                            i < instruction.raw.imm[imm_idx].offset + instruction.raw.imm[imm_idx].size) {
+
+                            if (instruction.raw.imm[imm_idx].is_relative) {
+                                mask = true; // Always mask relative calls/jumps
+                            }
+                            else if (phase_update_proof) {
+                                mask = true;
+                            }
+                        }
+                    }
+
+                    pattern.push_back({ local_decode_buffer[decode_offset + i], mask });
+                }
+
+                decode_offset += instruction.length;
+
+                // Trim trailing masked bytes to optimize search length
+                std::vector<PatternByte> temp_pattern = pattern;
+                while (!temp_pattern.empty() && temp_pattern.back().masked) {
+                    temp_pattern.pop_back();
+                }
+
+                matches = count_pattern_matches(handle, regions, temp_pattern, shared_chunk_buffer);
+
+                if (matches == 1) {
+                    pattern = temp_pattern;
+                    break;
                 }
             }
 
-            pattern.push_back({ target_region->buffer[local_offset + decode_offset + i], mask });
+            final_matches = matches;
+            final_pattern = pattern;
+
+            if (final_matches == 1) break;
         }
 
-        decode_offset += instruction.length;
-
-        std::vector<PatternByte> temp_pattern = pattern;
-        while (!temp_pattern.empty() && temp_pattern.back().masked) {
-            temp_pattern.pop_back();
-        }
-
-        matches = count_pattern_matches(regions, temp_pattern);
-
-        if (matches == 1) {
-            pattern = temp_pattern;
+        if (final_matches == 1) {
+            best_pattern = final_pattern;
+            best_offset = anchor_offset;
+            best_matches = 1;
             break;
         }
     }
 
-    if (matches > 1) {
-        out_sig.ce_style = "ERROR: Signature is NOT UNIQUE within the 128-byte limit.";
-        out_sig.cpp_pattern = "ERROR: Function too generic / not unique.";
+    if (best_matches > 1) {
+        out_sig.ce_style = "ERROR: Signature too generic. Couldn't find a unique anchor within 50 bytes.";
+        out_sig.cpp_pattern = "ERROR: Try another location.";
         out_sig.cpp_mask = "";
         return true;
     }
 
-    while (!pattern.empty() && pattern.back().masked) {
-        pattern.pop_back();
+    // Final trailing trim just to be absolutely sure
+    while (!best_pattern.empty() && best_pattern.back().masked) {
+        best_pattern.pop_back();
     }
 
-    for (const auto& pb : pattern) {
+    // Format the final output strings
+    for (const auto& pb : best_pattern) {
         if (pb.masked) {
-            out_sig.ce_style += "* ";
+            out_sig.ce_style += "?? ";
             out_sig.cpp_pattern += "\\x00";
             out_sig.cpp_mask += "?";
         }
@@ -254,34 +331,36 @@ bool generate_dynamic_signature(HANDLE handle, ULONG_PTR address, SignatureData&
     }
 
     if (!out_sig.ce_style.empty()) {
-        out_sig.ce_style.pop_back();
+        out_sig.ce_style.pop_back(); // Remove the last trailing space
+    }
+
+    // Append offset information if an anchor was used
+    if (best_offset < 0) {
+        std::string offset_info = std::format(" // OFFSET: +0x{:X} bytes to the injection point!", std::abs(best_offset));
+        out_sig.ce_style += offset_info;
+        out_sig.cpp_pattern += offset_info;
     }
 
     return true;
 }
 
 bool get_module_info(HANDLE handle, ULONG_PTR address, std::string& modName, ULONG_PTR& offset) {
-    HMODULE hMods[1024];
-    DWORD cbNeeded;
-    if (EnumProcessModules(handle, hMods, sizeof(hMods), &cbNeeded)) {
-        for (unsigned int i = 0; i < (cbNeeded / sizeof(HMODULE)); i++) {
-            MODULEINFO info;
-            if (GetModuleInformation(handle, hMods[i], &info, sizeof(info))) {
-                ULONG_PTR modBase = reinterpret_cast<ULONG_PTR>(info.lpBaseOfDll);
-                if (address >= modBase && address < modBase + info.SizeOfImage) {
-                    char name[MAX_PATH];
-                    GetModuleBaseNameA(handle, hMods[i], name, sizeof(name));
-                    modName = name;
-                    offset = address - modBase;
-                    return true;
-                }
-            }
-        }
+    ULONG_PTR modBase = 0;
+    SIZE_T modSize = 0;
+    char name[MAX_PATH] = {};
+
+    if (find_module_info(handle, address, modBase, modSize, name, sizeof(name))) {
+        modName = name;
+        offset = address - modBase;
+        return true;
     }
+
     modName = "Unknown.exe";
     offset = 0;
     return false;
 }
+
+// --- CHEAT ENGINE CONTEXT MENU CALLBACKS ---
 
 BOOL CE_CONV on_copy_aob(uintptr_t* selected_address) {
     if (!selected_address || !exports.OpenedProcessHandle) return TRUE;
@@ -318,13 +397,16 @@ BOOL CE_CONV on_rightclick(uintptr_t selected_address, const char** name_address
     return TRUE;
 }
 
-BOOL CE_CONV CEPlugin_GetVersion(CE_PLUGIN_VERSION* version, int version_size) {
+// --- CHEAT ENGINE PLUGIN EXPORTS ---
+// Notice the 'extern "C" __declspec(dllexport)'. This completely removes the need for a .def file!
+
+extern "C" __declspec(dllexport) BOOL CE_CONV CEPlugin_GetVersion(CE_PLUGIN_VERSION* version, int version_size) {
     version->plugin_name = const_cast<char*>("SigMaker Pro - Created by gmax17");
     version->version = 1;
     return sizeof(CE_PLUGIN_VERSION) == version_size;
 }
 
-BOOL CE_CONV CEPlugin_InitializePlugin(CE_EXPORTED_FUNCTIONS* ef, int pluginid) {
+extern "C" __declspec(dllexport) BOOL CE_CONV CEPlugin_InitializePlugin(CE_EXPORTED_FUNCTIONS* ef, int pluginid) {
     exports = *ef;
 
     ctx_aob.name = const_cast<char*>("Copy AOB Sig");
@@ -345,6 +427,6 @@ BOOL CE_CONV CEPlugin_InitializePlugin(CE_EXPORTED_FUNCTIONS* ef, int pluginid) 
     return TRUE;
 }
 
-BOOL CE_CONV CEPlugin_DisablePlugin() {
+extern "C" __declspec(dllexport) BOOL CE_CONV CEPlugin_DisablePlugin() {
     return TRUE;
 }
