@@ -6,18 +6,17 @@
 #include <vector>
 #include <string>
 #include <format>
+#include <span>
 #include <psapi.h>
 #include <algorithm>
-#include <cmath>
+#include <cstdlib>
 #include "Zydis.h"
 
 // Configuration constants
 constexpr SIZE_T SHARED_BUFFER_SIZE = 5 * 1024 * 1024;    // 5 MB chunk size for memory reading
 constexpr SIZE_T DEFAULT_MODULE_SIZE = 25 * 1024 * 1024;  // Fallback module size (25 MB)
-constexpr SIZE_T MAX_DECODE_BYTES = 128;
-constexpr size_t MAX_PATTERN_LENGTH = 32;
-constexpr int MAX_ANCHOR_OFFSET = 50;
-constexpr int ANCHOR_STEP = 10;
+constexpr SIZE_T MAX_DECODE_BYTES = 256;                   // Max bytes to decode forward from any anchor
+constexpr int MAX_ANCHOR_OFFSET = 64;                      // Max bytes to step back from target
 
 static CE_EXPORTED_FUNCTIONS exports;
 static CE_DISASSEMBLER_CONTEXT_INIT ctx_aob;
@@ -42,15 +41,16 @@ struct MemoryRegion {
 };
 
 // Retrieves module base address and size for a given memory address
-bool find_module_info(HANDLE handle, ULONG_PTR address, ULONG_PTR& out_base, SIZE_T& out_size, char* out_name = nullptr, size_t name_size = 0) {
+[[nodiscard]] bool find_module_info(HANDLE handle, ULONG_PTR address, ULONG_PTR& out_base, SIZE_T& out_size, char* out_name = nullptr, size_t name_size = 0) {
     HMODULE hMods[1024];
-    DWORD cbNeeded;
+    DWORD cbNeeded = 0;
 
     if (EnumProcessModules(handle, hMods, sizeof(hMods), &cbNeeded)) {
-        for (unsigned int i = 0; i < (cbNeeded / sizeof(HMODULE)); i++) {
-            MODULEINFO info;
+        const auto count = cbNeeded / sizeof(HMODULE);
+        for (DWORD i = 0; i < count; ++i) {
+            MODULEINFO info{};
             if (GetModuleInformation(handle, hMods[i], &info, sizeof(info))) {
-                ULONG_PTR base = reinterpret_cast<ULONG_PTR>(info.lpBaseOfDll);
+                auto base = reinterpret_cast<ULONG_PTR>(info.lpBaseOfDll);
                 if (address >= base && address < base + info.SizeOfImage) {
                     out_base = base;
                     out_size = info.SizeOfImage;
@@ -89,7 +89,7 @@ void set_clipboard(const std::string& str) {
 }
 
 // Scans for all committed, executable memory regions within the target module
-bool get_executable_regions(HANDLE handle, ULONG_PTR address, std::vector<MemoryRegion>& out_regions, ULONG_PTR& out_mod_base) {
+[[nodiscard]] bool get_executable_regions(HANDLE handle, ULONG_PTR address, std::vector<MemoryRegion>& out_regions, ULONG_PTR& out_mod_base) {
     ULONG_PTR modBase = 0;
     SIZE_T modSize = 0;
 
@@ -112,7 +112,7 @@ bool get_executable_regions(HANDLE handle, ULONG_PTR address, std::vector<Memory
         MEMORY_BASIC_INFORMATION mbi;
         if (!VirtualQueryEx(handle, reinterpret_cast<LPCVOID>(current_addr), &mbi, sizeof(mbi))) break;
 
-        bool is_executable = (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY));
+        bool is_executable = (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0;
 
         if (mbi.State == MEM_COMMIT && is_executable) {
             MemoryRegion region;
@@ -135,7 +135,7 @@ bool get_executable_regions(HANDLE handle, ULONG_PTR address, std::vector<Memory
 
 // Evaluates how many times a pattern exists in the target memory.
 // Returns 2 immediately if more than one match is found (early exit optimization).
-int count_pattern_matches(HANDLE handle, const std::vector<MemoryRegion>& regions, const std::vector<PatternByte>& pattern, std::vector<uint8_t>& chunk_buffer) {
+[[nodiscard]] int count_pattern_matches(HANDLE handle, std::span<const MemoryRegion> regions, std::span<const PatternByte> pattern, std::vector<uint8_t>& chunk_buffer) {
     if (pattern.empty()) return 0;
 
     int total_matches = 0;
@@ -184,20 +184,20 @@ int count_pattern_matches(HANDLE handle, const std::vector<MemoryRegion>& region
     return total_matches;
 }
 
-// Core function: Generates a unique, update-proof signature using Zydis instruction decoding
+// Core function: Generates the shortest unique, update-proof signature using Zydis instruction decoding.
+// Pattern length is determined dynamically — grows instruction by instruction until unique.
+// Tries the exact target address first, only falls back to anchoring if necessary.
 bool generate_dynamic_signature(HANDLE handle, ULONG_PTR address, SignatureData& out_sig) {
     std::vector<MemoryRegion> regions;
     ULONG_PTR modBase = 0;
 
     if (!get_executable_regions(handle, address, regions, modBase)) return false;
 
-    // Use thread_local to allocate the 5MB buffer only once per thread, reusing it across clicks
     static thread_local std::vector<uint8_t> shared_chunk_buffer(SHARED_BUFFER_SIZE);
 
     ZydisDecoder decoder;
     BOOL is_wow64 = FALSE;
 
-    // Initialize Zydis decoder based on process architecture
     if (IsWow64Process(handle, &is_wow64) && is_wow64) {
         ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LEGACY_32, ZYDIS_STACK_WIDTH_32);
     }
@@ -212,114 +212,126 @@ bool generate_dynamic_signature(HANDLE handle, ULONG_PTR address, SignatureData&
         }
     }
 
+    // Pre-read the entire decode region in one call: anchor area + forward decode space
+    const auto max_back = static_cast<ULONG_PTR>(MAX_ANCHOR_OFFSET);
+    ULONG_PTR read_start = (address > max_back) ? (address - max_back) : 0;
+    auto prefix = static_cast<SIZE_T>(address - read_start);
+    SIZE_T read_len = prefix + MAX_DECODE_BYTES;
+
+    std::vector<uint8_t> decode_region(read_len);
+    SIZE_T total_read = 0;
+
+    if (!ReadProcessMemory(handle, reinterpret_cast<LPCVOID>(read_start), decode_region.data(), read_len, &total_read) || total_read <= prefix) {
+        // Fallback: read only from the target address forward
+        read_start = address;
+        prefix = 0;
+        read_len = MAX_DECODE_BYTES;
+        decode_region.resize(read_len);
+        if (!ReadProcessMemory(handle, reinterpret_cast<LPCVOID>(read_start), decode_region.data(), read_len, &total_read) || total_read == 0) {
+            out_sig.ce_style = "ERROR: Could not read process memory.";
+            out_sig.cpp_pattern = out_sig.ce_style;
+            out_sig.cpp_mask = "";
+            return true;
+        }
+    }
+
     int best_offset = 0;
     std::vector<PatternByte> best_pattern;
-    int best_matches = 2;
+    bool found = false;
 
-    // Attempt to find a unique anchor by stepping backwards from the target address
-    for (int anchor_offset = 0; anchor_offset >= -MAX_ANCHOR_OFFSET; anchor_offset -= ANCHOR_STEP) {
-        ULONG_PTR current_scan_address = address + anchor_offset;
+    // Try exact address first (anchor_offset=0), then step back 1 byte at a time
+    int max_anchor = -static_cast<int>(prefix);
 
-        std::vector<uint8_t> local_decode_buffer(MAX_DECODE_BYTES);
-        SIZE_T bytes_read = 0;
-        if (!ReadProcessMemory(handle, reinterpret_cast<LPCVOID>(current_scan_address), local_decode_buffer.data(), MAX_DECODE_BYTES, &bytes_read) || bytes_read == 0) {
-            continue;
-        }
+    for (int anchor_offset = 0; anchor_offset >= max_anchor && !found; --anchor_offset) {
+        SIZE_T buf_idx = prefix + anchor_offset;
+        SIZE_T available = total_read - buf_idx;
+        const uint8_t* buf = decode_region.data() + buf_idx;
 
-        std::vector<PatternByte> final_pattern;
-        int final_matches = 2;
-
-        // Phase 0: Try update-proof (mask all disp/imm). Phase 1: Try strict matching if phase 0 is too generic.
-        for (int phase = 0; phase < 2; ++phase) {
-            bool phase_update_proof = (phase == 0);
+        // Phase 0: update-proof — mask displacements + ALL immediates
+        // Phase 1: strict     — mask displacements + relative immediates only
+        // Displacements are ALWAYS masked (address-relative, break on recompile)
+        for (int phase = 0; phase < 2 && !found; ++phase) {
+            bool mask_abs_imm = (phase == 0);
             std::vector<PatternByte> pattern;
+            pattern.reserve(64);
             size_t decode_offset = 0;
-            int matches = 2;
 
-            while (matches > 1 && decode_offset < MAX_PATTERN_LENGTH && decode_offset < bytes_read) {
-                ZydisDecodedInstruction instruction;
+            // Dynamic length: decode instructions one by one, check uniqueness after each
+            while (decode_offset < available) {
+                ZydisDecodedInstruction instr;
                 ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT];
 
-                if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(&decoder, local_decode_buffer.data() + decode_offset, bytes_read - decode_offset, &instruction, operands))) {
+                if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(&decoder, buf + decode_offset, available - decode_offset, &instr, operands))) {
                     break;
                 }
 
-                // Masking logic based on Zydis decode data
-                for (uint8_t i = 0; i < instruction.length; ++i) {
+                // NOTE: Zydis reports size fields in BITS, offset fields in BYTES
+                const auto disp_bytes = instr.raw.disp.size / 8;
+                const auto imm0_bytes = instr.raw.imm[0].size / 8;
+                const auto imm1_bytes = instr.raw.imm[1].size / 8;
+
+                for (uint8_t i = 0; i < instr.length; ++i) {
                     bool mask = false;
 
-                    // Mask displacements
-                    if (instruction.raw.disp.size > 0 &&
-                        i >= instruction.raw.disp.offset &&
-                        i < instruction.raw.disp.offset + instruction.raw.disp.size) {
-
-                        if (phase_update_proof) mask = true;
+                    // Always mask displacements (RIP-relative, address-relative — change every build)
+                    if (disp_bytes > 0 &&
+                        i >= instr.raw.disp.offset &&
+                        i < instr.raw.disp.offset + disp_bytes) {
+                        mask = true;
                     }
 
                     // Mask immediates
-                    for (int imm_idx = 0; imm_idx < 2; ++imm_idx) {
-                        if (instruction.raw.imm[imm_idx].size > 0 &&
-                            i >= instruction.raw.imm[imm_idx].offset &&
-                            i < instruction.raw.imm[imm_idx].offset + instruction.raw.imm[imm_idx].size) {
+                    const struct { ZyanU8 offset; ZyanU8 size_bytes; ZyanBool is_relative; } imm_info[2] = {
+                        { instr.raw.imm[0].offset, imm0_bytes, instr.raw.imm[0].is_relative },
+                        { instr.raw.imm[1].offset, imm1_bytes, instr.raw.imm[1].is_relative },
+                    };
 
-                            if (instruction.raw.imm[imm_idx].is_relative) {
-                                mask = true; // Always mask relative calls/jumps
-                            }
-                            else if (phase_update_proof) {
+                    for (const auto& [off, sz, is_rel] : imm_info) {
+                        if (sz > 0 && i >= off && i < off + sz) {
+                            if (is_rel || mask_abs_imm) {
                                 mask = true;
                             }
                         }
                     }
 
-                    pattern.push_back({ local_decode_buffer[decode_offset + i], mask });
+                    pattern.push_back({ buf[decode_offset + i], mask });
                 }
 
-                decode_offset += instruction.length;
+                decode_offset += instr.length;
 
-                // Trim trailing masked bytes to optimize search length
-                std::vector<PatternByte> temp_pattern = pattern;
-                while (!temp_pattern.empty() && temp_pattern.back().masked) {
-                    temp_pattern.pop_back();
+                // Trim trailing wildcards for uniqueness check
+                auto trimmed_size = pattern.size();
+                while (trimmed_size > 0 && pattern[trimmed_size - 1].masked) {
+                    --trimmed_size;
                 }
 
-                matches = count_pattern_matches(handle, regions, temp_pattern, shared_chunk_buffer);
+                if (trimmed_size == 0) continue;
+
+                std::span<const PatternByte> view(pattern.data(), trimmed_size);
+                int matches = count_pattern_matches(handle, regions, view, shared_chunk_buffer);
 
                 if (matches == 1) {
-                    pattern = temp_pattern;
+                    pattern.resize(trimmed_size);
+                    best_pattern = std::move(pattern);
+                    best_offset = anchor_offset;
+                    found = true;
                     break;
                 }
             }
-
-            final_matches = matches;
-            final_pattern = pattern;
-
-            if (final_matches == 1) break;
-        }
-
-        if (final_matches == 1) {
-            best_pattern = final_pattern;
-            best_offset = anchor_offset;
-            best_matches = 1;
-            break;
         }
     }
 
-    if (best_matches > 1) {
-        out_sig.ce_style = "ERROR: Signature too generic. Couldn't find a unique anchor within 50 bytes.";
+    if (!found) {
+        out_sig.ce_style = "ERROR: Signature too generic. No unique pattern found within scan range.";
         out_sig.cpp_pattern = "ERROR: Try another location.";
         out_sig.cpp_mask = "";
         return true;
     }
 
-    // Final trailing trim just to be absolutely sure
-    while (!best_pattern.empty() && best_pattern.back().masked) {
-        best_pattern.pop_back();
-    }
-
     // Format the final output strings
     for (const auto& pb : best_pattern) {
         if (pb.masked) {
-            out_sig.ce_style += "?? ";
+            out_sig.ce_style += "* ";
             out_sig.cpp_pattern += "\\x00";
             out_sig.cpp_mask += "?";
         }
@@ -331,12 +343,12 @@ bool generate_dynamic_signature(HANDLE handle, ULONG_PTR address, SignatureData&
     }
 
     if (!out_sig.ce_style.empty()) {
-        out_sig.ce_style.pop_back(); // Remove the last trailing space
+        out_sig.ce_style.pop_back();
     }
 
-    // Append offset information if an anchor was used
+    // Append offset info only if an anchor was needed (not at exact target)
     if (best_offset < 0) {
-        std::string offset_info = std::format(" // OFFSET: +0x{:X} bytes to the injection point!", std::abs(best_offset));
+        std::string offset_info = std::format(" // OFFSET: +0x{:X} bytes to injection point", -best_offset);
         out_sig.ce_style += offset_info;
         out_sig.cpp_pattern += offset_info;
     }
@@ -344,7 +356,7 @@ bool generate_dynamic_signature(HANDLE handle, ULONG_PTR address, SignatureData&
     return true;
 }
 
-bool get_module_info(HANDLE handle, ULONG_PTR address, std::string& modName, ULONG_PTR& offset) {
+[[nodiscard]] bool get_module_info(HANDLE handle, ULONG_PTR address, std::string& modName, ULONG_PTR& offset) {
     ULONG_PTR modBase = 0;
     SIZE_T modSize = 0;
     char name[MAX_PATH] = {};
@@ -401,7 +413,7 @@ BOOL CE_CONV on_rightclick(uintptr_t selected_address, const char** name_address
 // Notice the 'extern "C" __declspec(dllexport)'. This completely removes the need for a .def file!
 
 extern "C" __declspec(dllexport) BOOL CE_CONV CEPlugin_GetVersion(CE_PLUGIN_VERSION* version, int version_size) {
-    version->plugin_name = const_cast<char*>("SigMaker Pro - Created by gmax17");
+    version->plugin_name = "SigMaker Pro - Created by gmax17";
     version->version = 1;
     return sizeof(CE_PLUGIN_VERSION) == version_size;
 }
@@ -409,17 +421,17 @@ extern "C" __declspec(dllexport) BOOL CE_CONV CEPlugin_GetVersion(CE_PLUGIN_VERS
 extern "C" __declspec(dllexport) BOOL CE_CONV CEPlugin_InitializePlugin(CE_EXPORTED_FUNCTIONS* ef, int pluginid) {
     exports = *ef;
 
-    ctx_aob.name = const_cast<char*>("Copy AOB Sig");
+    ctx_aob.name = "Copy AOB Sig";
     ctx_aob.callback_routine = &on_copy_aob;
     ctx_aob.callback_routine_onpopup = &on_rightclick;
     exports.RegisterFunction(pluginid, CE_PLUGIN_TYPE_DISASSEMBLER_CONTEXT, &ctx_aob);
 
-    ctx_cpp.name = const_cast<char*>("Copy C++ Pattern");
+    ctx_cpp.name = "Copy C++ Pattern";
     ctx_cpp.callback_routine = &on_copy_cpp;
     ctx_cpp.callback_routine_onpopup = &on_rightclick;
     exports.RegisterFunction(pluginid, CE_PLUGIN_TYPE_DISASSEMBLER_CONTEXT, &ctx_cpp);
 
-    ctx_addr.name = const_cast<char*>("Copy Address Info");
+    ctx_addr.name = "Copy Address Info";
     ctx_addr.callback_routine = &on_copy_addr;
     ctx_addr.callback_routine_onpopup = &on_rightclick;
     exports.RegisterFunction(pluginid, CE_PLUGIN_TYPE_DISASSEMBLER_CONTEXT, &ctx_addr);
