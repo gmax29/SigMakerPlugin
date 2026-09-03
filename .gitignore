@@ -1,0 +1,23 @@
+# Visual Studio
+.vs/
+*.user
+*.suo
+
+# Build output and intermediates
+[Xx]64/
+[Ww]in32/
+[Dd]ebug/
+[Rr]elease/
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.tlog
+*.log
+*.idb
+*.iobj
+*.ipdb
+
+# Local tooling
+.claude/

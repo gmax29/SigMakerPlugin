@@ -9,13 +9,14 @@ Unlike traditional static signature makers, this plugin utilizes the **Zydis Dis
 ## Key Features
 
 * **Dynamic Pattern Length** — No fixed byte limit. The engine grows the signature instruction-by-instruction and stops the moment it's unique. Result: the most compact signature possible.
-* **Exact Injection Point** — Always tries the exact target address first. Anchor-based fallback (1-byte stepping, up to 64 bytes back) is only used when absolutely necessary.
+* **Exact Injection Point** — Always tries the exact target address first. Anchor-based fallback steps back over real instruction boundaries (up to 1024 bytes) and is only used when absolutely necessary.
 * **Update-Proof Masking** — Displacements (RIP-relative, address-relative) are **always** masked in both scan phases. Relative immediates (JMP/CALL targets) are always masked. Absolute immediates are masked in the first pass for maximum update resilience.
 * **Two-Phase Scan Strategy**:
   * **Phase 0 (Update-Proof)**: Masks displacements + all immediates — survives recompilation.
   * **Phase 1 (Strict)**: Masks displacements + relative immediates only — shorter pattern when Phase 0 is too generic.
 * **Architecture Auto-Detection** — Seamlessly handles 32-bit and 64-bit processes using native Windows APIs and WoW64 detection.
-* **Single-Read Optimization** — The entire decode region (anchor area + forward decode space) is read in one `ReadProcessMemory` call instead of dozens.
+* **Module Snapshot Scanner** — The executable memory of the target module is read once per lookup; every uniqueness check then runs against that local copy instead of issuing fresh `ReadProcessMemory` calls. The full scan is spread across all CPU cores.
+* **Symbol-Aware Addresses** — Address output goes through Cheat Engine's own resolver first, so Mono methods appear by name instead of as a raw pointer.
 * **Multi-Format Output** — Three output formats via the Memory Viewer context menu.
 * **C++20 Powered** — Built with `std::format`, `std::span`, `constexpr`, structured bindings, and `[[nodiscard]]`.
 
@@ -24,14 +25,16 @@ Unlike traditional static signature makers, this plugin utilizes the **Zydis Dis
 ## How It Works
 
 ```
-1. Read 320 bytes of memory (64 back + 256 forward) in a single call
-2. Start at the exact target address (offset = 0)
-3. Decode one instruction at a time using Zydis
-4. Mask displacement bytes + immediate bytes based on phase
-5. After each instruction: trim trailing wildcards, scan module for matches
-6. If matches == 1 → done (shortest unique signature found)
-7. If no unique sig at offset 0 → step back 1 byte, repeat (up to 64 bytes)
-8. Phase 0 fails entirely → try Phase 1 (stricter masking, fewer wildcards)
+1. Snapshot the executable regions of the target module into local memory (once)
+2. Collect anchor candidates: decode chains that land exactly on the target address
+3. Start at the exact target address (offset = 0)
+4. Decode one instruction at a time using Zydis
+5. Mask displacement bytes + immediate bytes based on phase
+6. After each instruction: trim trailing wildcards, scan the snapshot for matches
+7. First check keeps every match address; later checks only re-test those candidates
+8. If matches == 1 and it sits at the expected address → done
+9. Otherwise try the next anchor, then Phase 1 (stricter masking, fewer wildcards)
+10. Re-verify the finished pattern on its own before emitting it
 ```
 
 ---
@@ -52,17 +55,55 @@ Unlike traditional static signature makers, this plugin utilizes the **Zydis Dis
 ## Available Output Formats
 
 ### 1. Copy AOB Sig
-Standard Cheat Engine format with `*` wildcards.
-> `48 83 EC * E8 * * * * 48 83 C4 *`
+Standard Cheat Engine AOB format. Trailing wildcards are trimmed, so the pattern always
+ends on a fixed byte.
+> `48 8B 8F ?? ?? ?? ?? 48 8B 97 ?? ?? ?? ?? E8`
+
+When the signature had to be anchored before the selected instruction, a second line names
+the target it points at.
+> `// result + 0x7 = Game-Win64-Shipping.exe+1234AB`
 
 ### 2. Copy C++ Pattern
 Ready-to-use byte array and mask for internal/external tools.
-> `\x48\x83\xEC\x00\xE8\x00\x00\x00\x00\x48\x83\xC4\x00`
-> `xxx?x????xxx?`
+> `\x48\x8B\x8F\x00\x00\x00\x00\x48\x8B\x97\x00\x00\x00\x00\xE8`
+> `xxx????xxx????x`
 
 ### 3. Copy Address Info
-Module-relative offset for documentation and static analysis.
-> `Game-Win64-Shipping.exe + 0x1234AB = 0x7FF65FD0FDF8`
+Whatever Cheat Engine can resolve for the address: a Mono method or debug symbol first,
+then module plus offset, then the bare address.
+> `Menu_DevGame:UpdateDesignSettings+f5`
+> `Game-Win64-Shipping.exe+1234AB`
+
+---
+
+## Changelog (v2.1 — Snapshot Scanner & Zydis 5)
+
+### Changed
+- **Zydis updated 4.1 → 5.0.0.** Newer instruction tables and decoder fixes.
+- **One-shot module snapshot.** All executable regions of the target module are read into
+  local memory once per lookup; every uniqueness check and candidate filter then runs
+  against that snapshot instead of issuing a fresh `ReadProcessMemory` call per attempt.
+  This is what actually fixed the multi-minute freeze on generic signatures — the earlier
+  candidate-list optimization still re-scanned the whole module per anchor.
+- **Instruction-aligned anchors.** Fallback anchors are now real decode-chain boundaries
+  (found by decoding forward once) instead of every byte offset, cutting anchor attempts
+  from up to 1024 to a few dozen.
+- **Full-module scan is multithreaded**, split into 2 MB chunks across all CPU cores, with
+  a `memchr`-based prefilter on the first unmasked byte.
+- **`Copy Address Info`** now asks Cheat Engine's own symbol resolver first, so Mono/IL2CPP
+  methods print as `Menu_DevGame:UpdateDesignSettings+f5` instead of a bare hex address;
+  falls back to `module+offset`, then the raw address.
+
+### Fixed
+- Uncovered/invalid addresses now fail immediately with a clear error instead of scanning
+  the whole module empty-handed on every anchor attempt.
+- `EnumProcessModules` buffer could be overrun on processes with >1024 modules.
+- `ReadProcessMemory` partial reads (`STATUS_PARTIAL_COPY`) were discarded outright instead
+  of being accepted where they still covered the needed range.
+- A generated signature is now re-verified as a whole (exactly one hit, at the expected
+  address) before being emitted; previously an incrementally-built pattern was trusted
+  without a final check.
+- `GlobalFree` leak in the clipboard helper when `SetClipboardData` failed.
 
 ---
 
