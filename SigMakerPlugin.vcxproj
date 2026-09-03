@@ -139,13 +139,13 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClInclude Include="Zydis.h" />
+    <ClInclude Include="..\..\zydis\amalgamated-dist\Zydis.h" />
     <ClInclude Include="framework.h" />
     <ClInclude Include="loader.h" />
     <ClInclude Include="sdk.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="Zydis.c" />
+    <ClCompile Include="..\..\zydis\amalgamated-dist\Zydis.c" />
     <ClCompile Include="loader.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
