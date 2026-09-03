@@ -99,7 +99,7 @@ typedef struct _CE_PLUGIN_TYPE_8_INIT {
 	CEP_PLUGIN_TYPE_8 callback_routine;
 } CE_PLUGIN_TYPE_8_INIT, CE_AUTOASSEMBLER_PLUGIN_INIT;
 
-#ifdef _WIN32 || _WIN64
+#if defined(_WIN32) || defined(_WIN64)
 
 #ifndef _WIN64
 
@@ -195,7 +195,7 @@ typedef struct _CE_REGISTER_MODIFICATION_INFO {
 
 #endif
 
-#elif
+#else
 
 #error "ARCHITECHTURE IS NOT SUPPORTED!"
 
@@ -218,7 +218,7 @@ typedef BOOL(__stdcall* CEP_RELOADSETTINGS)();
 typedef DWORD(__stdcall* CEP_GETADDRESSFROMPOINTER)(uintptr_t baseaddress, int offsetcount, int* offsets);
 typedef BOOL(__stdcall* CEP_GENERATEAPIHOOKSCRIPT)(const char* address, const char* addresstojumpto, const char* addresstogetnewcalladdress, const char* script, int maxscriptsize);
 typedef BOOL(__stdcall* CEP_ADDRESSTONAME)(uintptr_t address, const char* name, int maxnamesize);
-typedef BOOL(__stdcall* CEP_NAMETOADDRESS)(const const char* name, uintptr_t* address);
+typedef BOOL(__stdcall* CEP_NAMETOADDRESS)(const char* name, uintptr_t* address);
 
 typedef void(__stdcall* CEP_LOADDBK32)();
 typedef BOOL(__stdcall* CEP_LOADDBVMIFNEEDED)();
