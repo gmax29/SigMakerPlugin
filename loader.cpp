@@ -15,6 +15,7 @@
 #include <atomic>
 #include <cctype>
 #include <cstdlib>
+#include <memory>
 #include "Zydis.h"
 
 constexpr SIZE_T DEFAULT_MODULE_SIZE = 25 * 1024 * 1024;
@@ -24,7 +25,13 @@ constexpr SIZE_T SCAN_CHUNK = 2 * 1024 * 1024;
 constexpr ULONG_PTR MAX_ANCHOR_RANGE = 1024;
 constexpr SIZE_T MAX_DECODE_BYTES = 4096;
 constexpr size_t MAX_ANCHORS = 64;
-constexpr size_t MAX_HITS = 1u << 20;
+constexpr size_t MAX_HITS = 1u << 16;
+
+// Below this the thread pool costs more than the scan it would speed up.
+constexpr size_t PARALLEL_THRESHOLD = 4 * 1024 * 1024;
+
+// Cheat Engine's AOB scanner accepts this as a wildcard byte.
+constexpr char WILDCARD_CHAR = '*';
 
 // Literal backslash for the C++ pattern output.
 static const std::string CPP_ESCAPE(1, static_cast<char>(92));
@@ -49,7 +56,8 @@ struct SignatureData {
 
 struct SnapshotRegion {
     ULONG_PTR base = 0;
-    std::vector<uint8_t> bytes;
+    std::unique_ptr<uint8_t[]> bytes;   // default-initialised, never zero-filled
+    size_t size = 0;
 };
 
 // Every byte held here was really read from the target, so scanning never has to
@@ -66,15 +74,15 @@ struct ModuleSnapshot {
             [](ULONG_PTR a, const SnapshotRegion& r) { return a < r.base; });
         if (it == regions.begin()) return nullptr;
         --it;
-        return (addr - it->base < it->bytes.size()) ? &*it : nullptr;
+        return (addr - it->base < it->size) ? &*it : nullptr;
     }
 
     [[nodiscard]] const uint8_t* ptr(ULONG_PTR addr, SIZE_T need) const {
         const SnapshotRegion* r = region_of(addr);
         if (!r) return nullptr;
         const SIZE_T off = addr - r->base;
-        if (need > r->bytes.size() - off) return nullptr;
-        return r->bytes.data() + off;
+        if (need > r->size - off) return nullptr;
+        return r->bytes.get() + off;
     }
 
     [[nodiscard]] bool contains(ULONG_PTR addr) const { return ptr(addr, 1) != nullptr; }
@@ -120,42 +128,62 @@ BOOL enum_modules(HANDLE handle, HMODULE* out, DWORD cb, DWORD* needed) {
 void read_region_runs(HANDLE handle, ULONG_PTR base, SIZE_T size, std::vector<SnapshotRegion>& out) {
     if (size == 0) return;
 
-    SnapshotRegion whole;
-    whole.base = base;
-    whole.bytes.resize(size);
+    std::unique_ptr<uint8_t[]> buffer(new (std::nothrow) uint8_t[size]);
+    if (!buffer) return;
 
     SIZE_T got = 0;
-    if (ReadProcessMemory(handle, reinterpret_cast<LPCVOID>(base), whole.bytes.data(), size, &got) && got == size) {
+    if (ReadProcessMemory(handle, reinterpret_cast<LPCVOID>(base), buffer.get(), size, &got) && got == size) {
+        SnapshotRegion whole;
+        whole.base = base;
+        whole.size = size;
+        whole.bytes = std::move(buffer);
         out.push_back(std::move(whole));
         return;
     }
-    whole.bytes.clear();
-    whole.bytes.shrink_to_fit();
 
-    std::vector<uint8_t> page(PAGE_GRANULARITY);
-    SnapshotRegion run;
+    // Something in the range is unreadable. Read page by page into the same buffer and
+    // record which stretches came back, so every byte kept is a byte really read.
+    struct Run { SIZE_T off; SIZE_T len; };
+    std::vector<Run> runs;
     bool in_run = false;
 
     for (SIZE_T off = 0; off < size; off += PAGE_GRANULARITY) {
         const SIZE_T len = std::min(PAGE_GRANULARITY, size - off);
         SIZE_T n = 0;
-        const bool ok = ReadProcessMemory(handle, reinterpret_cast<LPCVOID>(base + off), page.data(), len, &n) && n == len;
 
-        if (ok) {
-            if (!in_run) {
-                run.base = base + off;
-                run.bytes.clear();
+        if (ReadProcessMemory(handle, reinterpret_cast<LPCVOID>(base + off), buffer.get() + off, len, &n) && n == len) {
+            if (in_run) runs.back().len += len;
+            else {
+                runs.push_back({ off, len });
                 in_run = true;
             }
-            run.bytes.insert(run.bytes.end(), page.begin(), page.begin() + len);
         }
-        else if (in_run) {
-            out.push_back(std::move(run));
-            run = SnapshotRegion{};
+        else {
             in_run = false;
         }
     }
-    if (in_run) out.push_back(std::move(run));
+
+    if (runs.empty()) return;
+
+    if (runs.size() == 1 && runs[0].off == 0 && runs[0].len == size) {
+        SnapshotRegion whole;
+        whole.base = base;
+        whole.size = size;
+        whole.bytes = std::move(buffer);
+        out.push_back(std::move(whole));
+        return;
+    }
+
+    for (const Run& r : runs) {
+        SnapshotRegion piece;
+        piece.bytes.reset(new (std::nothrow) uint8_t[r.len]);
+        if (!piece.bytes) continue;
+
+        std::memcpy(piece.bytes.get(), buffer.get() + r.off, r.len);
+        piece.base = base + r.off;
+        piece.size = r.len;
+        out.push_back(std::move(piece));
+    }
 }
 
 [[nodiscard]] bool capture_snapshot(HANDLE handle, ULONG_PTR address, ModuleSnapshot& snap) {
@@ -228,20 +256,28 @@ bool scan_snapshot(const ModuleSnapshot& snap, std::span<const PatternByte> pat,
     std::vector<Chunk> chunks;
 
     for (const auto& r : snap.regions) {
-        if (r.bytes.size() < pat.size()) continue;
+        if (r.size < pat.size()) continue;
         size_t off = 0;
-        while (off + pat.size() <= r.bytes.size()) {
-            const size_t len = std::min(SCAN_CHUNK, r.bytes.size() - off);
-            chunks.push_back({ r.bytes.data() + off, len, r.base + off });
+        while (off + pat.size() <= r.size) {
+            const size_t len = std::min(SCAN_CHUNK, r.size - off);
+            chunks.push_back({ r.bytes.get() + off, len, r.base + off });
             if (len < SCAN_CHUNK) break;
             off += len - (pat.size() - 1);
         }
     }
     if (chunks.empty()) return true;
 
-    unsigned worker_count = std::thread::hardware_concurrency();
-    if (worker_count == 0) worker_count = 4;
-    worker_count = static_cast<unsigned>(std::min<size_t>(worker_count, chunks.size()));
+    size_t total_bytes = 0;
+    for (const auto& c : chunks) total_bytes += c.len;
+
+    // Spawning a pool costs more than scanning a few megabytes, and this runs dozens of
+    // times per signature, so small scans stay on the calling thread.
+    unsigned worker_count = 1;
+    if (chunks.size() > 1 && total_bytes >= PARALLEL_THRESHOLD) {
+        worker_count = std::thread::hardware_concurrency();
+        if (worker_count == 0) worker_count = 4;
+        worker_count = static_cast<unsigned>(std::min<size_t>(worker_count, chunks.size()));
+    }
 
     std::atomic<size_t> total{ 0 };
     std::atomic<bool> capped{ false };
@@ -284,10 +320,15 @@ bool scan_snapshot(const ModuleSnapshot& snap, std::span<const PatternByte> pat,
         out.insert(out.end(), local.begin(), local.end());
         };
 
-    std::vector<std::thread> pool;
-    pool.reserve(worker_count);
-    for (unsigned i = 0; i < worker_count; ++i) pool.emplace_back(worker, i);
-    for (auto& t : pool) t.join();
+    if (worker_count == 1) {
+        worker(0);
+    }
+    else {
+        std::vector<std::thread> pool;
+        pool.reserve(worker_count);
+        for (unsigned i = 0; i < worker_count; ++i) pool.emplace_back(worker, i);
+        for (auto& t : pool) t.join();
+    }
 
     std::sort(out.begin(), out.end());
     return !capped.load();
@@ -368,10 +409,10 @@ void collect_anchors(const ZydisDecoder& decoder, const uint8_t* window, SIZE_T 
         return false;
     }
 
-    const ULONG_PTR region_end = reg->base + reg->bytes.size();
+    const ULONG_PTR region_end = reg->base + reg->size;
     const SIZE_T prefix = static_cast<SIZE_T>(std::min<ULONG_PTR>(MAX_ANCHOR_RANGE, address - reg->base));
     const SIZE_T forward = static_cast<SIZE_T>(std::min<ULONG_PTR>(MAX_DECODE_BYTES, region_end - address));
-    const uint8_t* const window = reg->bytes.data() + (address - reg->base) - prefix;
+    const uint8_t* const window = reg->bytes.get() + (address - reg->base) - prefix;
 
     std::vector<SIZE_T> anchors;
     collect_anchors(decoder, window, prefix, anchors);
@@ -476,7 +517,7 @@ void collect_anchors(const ZydisDecoder& decoder, const uint8_t* window, SIZE_T 
 
     for (const auto& pb : best_pattern) {
         if (pb.masked) {
-            out.data.ce_style += "?? ";
+            out.data.ce_style += std::format("{} ", WILDCARD_CHAR);
             out.data.cpp_pattern += CPP_ESCAPE + "x00";
             out.data.cpp_mask += "?";
         }
