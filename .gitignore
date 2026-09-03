@@ -21,3 +21,6 @@
 
 # Local tooling
 .claude/
+
+# Extracted copy of the repo, not part of it
+/SigMakerPlugin-main/
