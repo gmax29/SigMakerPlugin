@@ -21,7 +21,6 @@ static bool is_all_hex(const std::string& s) {
     return true;
 }
 
-// Splits "Menu_DevGame:UpdateDesignSettings+f5" into base and offset.
 static void split_symbol(const std::string& in, std::string& base, ULONG_PTR& offset) {
     base = in;
     offset = 0;
@@ -62,7 +61,6 @@ static void set_clipboard(const std::string& str) {
     if (!SetClipboardData(CF_TEXT, buf)) GlobalFree(buf);
 }
 
-// Cheat Engine's resolver, which also knows Mono method names. Missing on older hosts.
 static bool ce_name_at(ULONG_PTR address, std::string& out) {
     if (!exports.sym_addressToName) return false;
 
@@ -74,8 +72,6 @@ static bool ce_name_at(ULONG_PTR address, std::string& out) {
     return !out.empty();
 }
 
-// Best expression for an address, meant to be pasted straight back into Cheat Engine:
-// a Mono method or debug symbol, else module plus offset, else the bare address.
 static std::string describe_address(HANDLE handle, ULONG_PTR address) {
     std::string name;
     if (ce_name_at(address, name)) {
@@ -172,6 +168,8 @@ BOOL CE_CONV on_rightclick(uintptr_t selected_address, const char** name_address
 }
 
 extern "C" __declspec(dllexport) BOOL CE_CONV CEPlugin_GetVersion(CE_PLUGIN_VERSION* version, int version_size) {
+    if (!version) return FALSE;
+
     version->plugin_name = "SigMaker Pro - Created by gmax17";
     version->version = 1;
     return sizeof(CE_PLUGIN_VERSION) == version_size;

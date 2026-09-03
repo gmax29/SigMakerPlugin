@@ -11,7 +11,6 @@
 
 #include <psapi.h>
 
-// EnumProcessModules alone misses 32 bit modules when the host is 64 bit.
 static BOOL enum_modules(HANDLE handle, HMODULE* out, DWORD cb, DWORD* needed) {
     if (EnumProcessModulesEx(handle, out, cb, needed, LIST_MODULES_ALL)) return TRUE;
     return EnumProcessModules(handle, out, cb, needed);
@@ -23,10 +22,14 @@ bool find_module_info(HANDLE handle, ULONG_PTR address, ULONG_PTR& out_base, SIZ
 
     if (!enum_modules(handle, mods.data(), static_cast<DWORD>(mods.size() * sizeof(HMODULE)), &cb_needed)) return false;
 
-    // cb_needed is the size required, which can exceed what was written.
     if (cb_needed > mods.size() * sizeof(HMODULE)) {
-        mods.resize(cb_needed / sizeof(HMODULE));
-        if (!enum_modules(handle, mods.data(), static_cast<DWORD>(mods.size() * sizeof(HMODULE)), &cb_needed)) return false;
+        std::vector<HMODULE> bigger(cb_needed / sizeof(HMODULE));
+        DWORD bigger_needed = 0;
+
+        if (enum_modules(handle, bigger.data(), static_cast<DWORD>(bigger.size() * sizeof(HMODULE)), &bigger_needed)) {
+            mods = std::move(bigger);
+            cb_needed = bigger_needed;
+        }
     }
 
     const size_t count = std::min<size_t>(cb_needed / sizeof(HMODULE), mods.size());
@@ -47,8 +50,6 @@ bool find_module_info(HANDLE handle, ULONG_PTR address, ULONG_PTR& out_base, SIZ
     return false;
 }
 
-// new[] leaves the buffer uninitialised, which matters here: zero-filling a .text section
-// that ReadProcessMemory overwrites a moment later touches every page twice.
 static void read_region_runs(HANDLE handle, ULONG_PTR base, SIZE_T size, std::vector<SnapshotRegion>& out) {
     if (size == 0) return;
 
@@ -65,8 +66,6 @@ static void read_region_runs(HANDLE handle, ULONG_PTR base, SIZE_T size, std::ve
         return;
     }
 
-    // Something in the range is unreadable. Go page by page and keep only the stretches
-    // that came back.
     struct Run { SIZE_T off; SIZE_T len; };
     std::vector<Run> runs;
     bool in_run = false;
@@ -120,7 +119,6 @@ bool capture_snapshot(HANDLE handle, ULONG_PTR address, ModuleSnapshot& snap) {
         snap.has_module = true;
     }
     else {
-        // JIT code belongs to no module; fall back to its allocation.
         MEMORY_BASIC_INFORMATION mbi{};
         if (!VirtualQueryEx(handle, reinterpret_cast<LPCVOID>(address), &mbi, sizeof(mbi))) return false;
         mod_base = reinterpret_cast<ULONG_PTR>(mbi.AllocationBase);
@@ -164,7 +162,6 @@ bool scan_snapshot(const ModuleSnapshot& snap, std::span<const PatternByte> pat,
     out.clear();
     if (pat.empty()) return false;
 
-    // memchr on the first fixed byte beats a byte-by-byte loop by a wide margin.
     size_t lead = 0;
     while (lead < pat.size() && pat[lead].masked) ++lead;
     if (lead == pat.size()) return false;
@@ -184,7 +181,7 @@ bool scan_snapshot(const ModuleSnapshot& snap, std::span<const PatternByte> pat,
             const size_t len = std::min(SCAN_CHUNK, r.size - off);
             chunks.push_back({ r.bytes.get() + off, len, r.base + off });
             if (len < SCAN_CHUNK) break;
-            off += len - (pat.size() - 1);   // overlap so a match cannot fall between chunks
+            off += len - (pat.size() - 1);
         }
     }
     if (chunks.empty()) return true;
@@ -192,8 +189,6 @@ bool scan_snapshot(const ModuleSnapshot& snap, std::span<const PatternByte> pat,
     size_t total_bytes = 0;
     for (const auto& c : chunks) total_bytes += c.len;
 
-    // This runs dozens of times per signature, so a pool for a couple of megabytes would
-    // cost more than the scan it speeds up.
     unsigned worker_count = 1;
     if (chunks.size() > 1 && total_bytes >= PARALLEL_THRESHOLD) {
         worker_count = std::thread::hardware_concurrency();

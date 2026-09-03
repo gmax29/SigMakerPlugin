@@ -2,6 +2,7 @@
 
 #include <Windows.h>
 #include <algorithm>
+#include <cstdint>
 #include <memory>
 #include <span>
 #include <string>
@@ -34,7 +35,7 @@ struct SignatureData {
 
 struct SignatureResult {
     SignatureData data;
-    int anchor_offset = 0;   // <= 0, pattern start relative to the target
+    int anchor_offset = 0;
     bool ok = false;
     std::string error;
 };
@@ -45,8 +46,6 @@ struct SnapshotRegion {
     size_t size = 0;
 };
 
-// Holds only bytes that were really read, so scanning never has to ask whether a page
-// was accessible.
 struct ModuleSnapshot {
     ULONG_PTR mod_base = 0;
     SIZE_T mod_size = 0;
@@ -78,7 +77,6 @@ struct ModuleSnapshot {
 
 [[nodiscard]] bool capture_snapshot(HANDLE handle, ULONG_PTR address, ModuleSnapshot& snap);
 
-// False when max_hits was reached: the result is then incomplete and proves nothing.
 bool scan_snapshot(const ModuleSnapshot& snap, std::span<const PatternByte> pat,
     std::vector<ULONG_PTR>& out, size_t max_hits);
 
