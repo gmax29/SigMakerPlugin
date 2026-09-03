@@ -149,35 +149,6 @@ from about 12 ms to 4-6 ms.
 
 ---
 
-## Changelog (v2 — Dynamic Engine Rewrite)
-
-### Changed
-- **Dynamic pattern length**: Removed the fixed `MAX_PATTERN_LENGTH = 32` limit. Signatures now grow dynamically until unique — no manual tuning needed.
-- **Displacements always masked**: Both phases now mask displacements. Previously Phase 1 left them unmasked, which could break signatures after updates.
-- **1-byte anchor stepping**: Changed from 10-byte steps to 1-byte steps for precise anchor placement when fallback is needed.
-- **Single memory read**: The entire decode region (320 bytes) is pre-read in one `ReadProcessMemory` call instead of up to 64 separate calls.
-- **Decode buffer increased**: From 128 to 256 bytes forward, allowing unique signatures for code in highly repetitive regions.
-- **Anchor range increased**: From 50 to 64 bytes back, covering more potential anchor points.
-
-### Removed
-- `MAX_PATTERN_LENGTH` constant (replaced by dynamic growth)
-- `ANCHOR_STEP` constant (replaced by 1-byte stepping)
-
-### Fixed
-- Phase 1 no longer leaves displacements unmasked — all signatures are now update-safe by default.
-- Eliminated per-offset heap allocations in the anchor loop.
-
----
-
-## Build Requirements
-
-* **Visual Studio 2022** (or newer)
-* **C++20 Standard** enabled
-* **Zydis Disassembler Library** (Include & Lib)
-* **Windows SDK** (for PSAPI and Memory APIs)
-
----
-
 ## Credits
 Developed by **gmax17**.
 Special thanks to the **Zydis** team for their incredible disassembly library.
