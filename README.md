@@ -118,7 +118,7 @@ from about 12 ms to 4-6 ms.
 
 ---
 
-## Changelog (1.0.4 — Snapshot Scanner & Zydis 5)
+## Changelog (1.0.5 — Snapshot Scanner & Zydis 5)
 
 ### Changed
 - **Zydis updated 4.1 → 5.0.0.** Newer instruction tables and decoder fixes.
