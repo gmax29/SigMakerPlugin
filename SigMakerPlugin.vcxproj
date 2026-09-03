@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|Win32">
@@ -142,11 +142,14 @@
     <ClInclude Include="..\..\zydis\amalgamated-dist\Zydis.h" />
     <ClInclude Include="framework.h" />
     <ClInclude Include="loader.h" />
+    <ClInclude Include="sigmaker.h" />
     <ClInclude Include="sdk.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\..\zydis\amalgamated-dist\Zydis.c" />
     <ClCompile Include="loader.cpp" />
+    <ClCompile Include="signature.cpp" />
+    <ClCompile Include="snapshot.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
