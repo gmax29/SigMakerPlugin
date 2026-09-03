@@ -21,8 +21,6 @@ void init_decoder(HANDLE handle, ZydisDecoder& decoder) {
     }
 }
 
-// Offsets whose decode chain lands exactly on the target. Everything else decodes garbage
-// and is useless as a fallback anchor.
 static void collect_anchors(const ZydisDecoder& decoder, const uint8_t* window, SIZE_T prefix, std::vector<SIZE_T>& out) {
     out.clear();
     out.push_back(prefix);
@@ -70,8 +68,6 @@ bool build_signature(const ModuleSnapshot& snap, const ZydisDecoder& decoder, UL
         const uint8_t* const buf = window + anchor;
         const SIZE_T available = (prefix - anchor) + forward;
 
-        // Phase 0 masks every immediate and survives a recompile; phase 1 keeps absolute
-        // ones and is only used when phase 0 stays ambiguous.
         for (int phase = 0; phase < 2 && !found; ++phase) {
             const bool mask_abs_imm = (phase == 0);
 
@@ -87,7 +83,6 @@ bool build_signature(const ModuleSnapshot& snap, const ZydisDecoder& decoder, UL
 
                 if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(&decoder, buf + decode_offset, available - decode_offset, &instr, operands))) break;
 
-                // Zydis reports sizes in bits, offsets in bytes.
                 const auto disp_bytes = static_cast<ZyanU8>(instr.raw.disp.size / 8);
                 const auto imm0_bytes = static_cast<ZyanU8>(instr.raw.imm[0].size / 8);
                 const auto imm1_bytes = static_cast<ZyanU8>(instr.raw.imm[1].size / 8);
@@ -125,7 +120,6 @@ bool build_signature(const ModuleSnapshot& snap, const ZydisDecoder& decoder, UL
                 const std::span<const PatternByte> view(pattern.data(), trimmed);
 
                 if (!have_candidates) {
-                    // An incomplete result proves nothing, so extend and try again.
                     if (!scan_snapshot(snap, view, candidates, MAX_HITS)) continue;
                     have_candidates = true;
                 }
@@ -151,7 +145,6 @@ bool build_signature(const ModuleSnapshot& snap, const ZydisDecoder& decoder, UL
         return false;
     }
 
-    // Built incrementally, so prove the finished form on its own.
     std::vector<ULONG_PTR> verify;
     if (!scan_snapshot(snap, best_pattern, verify, MAX_HITS) || verify.size() != 1 || verify[0] != address + best_offset) {
         out.error = "ERROR: Final verification failed. Signature was not emitted.";
