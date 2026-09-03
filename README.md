@@ -76,6 +76,22 @@ then module plus offset, then the bare address.
 
 ---
 
+## Changelog (1.0.6 — Source Layout)
+
+Housekeeping only. Generated signatures are byte for byte identical to 1.0.5, so there is
+no reason to update if 1.0.5 already works for you.
+
+### Changed
+- **`loader.cpp` split into modules.** 743 lines in one file became four focused ones:
+  `sigmaker.h` (types, constants, declarations), `snapshot.cpp` (module lookup, memory
+  capture, scanning), `signature.cpp` (decoding, masking, pattern building) and
+  `loader.cpp`, which now holds only the Cheat Engine plugin glue.
+- **Comments trimmed** to the ones that explain a decision the code cannot show on its own,
+  such as why scan chunks overlap or why the thread pool is tied to a size threshold.
+  File-local helpers are `static` now.
+
+---
+
 ## Changelog (1.0.5 — Memory & Output)
 
 ### Changed
