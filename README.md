@@ -15,7 +15,7 @@ Unlike traditional static signature makers, this plugin utilizes the **Zydis Dis
   * **Phase 0 (Update-Proof)**: Masks displacements + all immediates — survives recompilation.
   * **Phase 1 (Strict)**: Masks displacements + relative immediates only — shorter pattern when Phase 0 is too generic.
 * **Architecture Auto-Detection** — Seamlessly handles 32-bit and 64-bit processes using native Windows APIs and WoW64 detection.
-* **Module Snapshot Scanner** — The executable memory of the target module is read once per lookup; every uniqueness check then runs against that local copy instead of issuing fresh `ReadProcessMemory` calls. The full scan is spread across all CPU cores.
+* **Module Snapshot Scanner** — The executable memory of the target module is read once per lookup; every uniqueness check then runs against that local copy instead of issuing fresh `ReadProcessMemory` calls. Large scans are spread across all CPU cores, small ones stay on one thread.
 * **Symbol-Aware Addresses** — Address output goes through Cheat Engine's own resolver first, so Mono methods appear by name instead of as a raw pointer.
 * **Multi-Format Output** — Three output formats via the Memory Viewer context menu.
 * **C++20 Powered** — Built with `std::format`, `std::span`, `constexpr`, structured bindings, and `[[nodiscard]]`.
@@ -55,9 +55,9 @@ Unlike traditional static signature makers, this plugin utilizes the **Zydis Dis
 ## Available Output Formats
 
 ### 1. Copy AOB Sig
-Standard Cheat Engine AOB format. Trailing wildcards are trimmed, so the pattern always
-ends on a fixed byte.
-> `48 8B 8F ?? ?? ?? ?? 48 8B 97 ?? ?? ?? ?? E8`
+Standard Cheat Engine AOB format with `*` wildcards. Trailing wildcards are trimmed, so
+the pattern always ends on a fixed byte.
+> `48 8B 8F * * * * 48 8B 97 * * * * E8`
 
 When the signature had to be anchored before the selected instruction, a second line names
 the target it points at.
@@ -76,7 +76,33 @@ then module plus offset, then the bare address.
 
 ---
 
-## Changelog (v2.1 — Snapshot Scanner & Zydis 5)
+## Changelog (1.0.5 — Memory & Output)
+
+### Changed
+- **Wildcards print as `*` again** in the AOB output. `Copy C++ Pattern` is unaffected and
+  keeps `\x00` / `?`.
+- **Snapshot buffers are no longer zero-filled.** The region was previously held in a
+  `std::vector`, whose `resize()` fills the whole buffer with zeros before
+  `ReadProcessMemory` overwrites it — a pointless memset of the entire `.text` section and
+  a second pass over every page, on every lookup. It is now a raw array that `new[]` leaves
+  uninitialised.
+- **Exact allocations in the page-wise fallback.** When a region cannot be read in one go,
+  the readable stretches were accumulated with `insert()`, which can leave the buffer
+  holding roughly twice its content. The pages now go into one buffer and each stretch is
+  cut to size afterwards.
+- **Candidate limit lowered** from 1,048,576 to 65,536 addresses. On overflow the scan
+  already reports itself incomplete and the caller extends the pattern instead, so the
+  larger list was never needed — it only cost memory and sorting time.
+- **The thread pool is only built when it pays off.** A fresh pool was spawned for every
+  scan, including the very small ones that run dozens of times per signature. Scans below
+  4 MB now run on the calling thread.
+
+On a synthetic 48 MB section with 22,500 near-identical decoys, signature generation went
+from about 12 ms to 4-6 ms.
+
+---
+
+## Changelog (1.0.4 — Snapshot Scanner & Zydis 5)
 
 ### Changed
 - **Zydis updated 4.1 → 5.0.0.** Newer instruction tables and decoder fixes.
