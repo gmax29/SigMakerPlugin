@@ -86,6 +86,15 @@ Whatever Cheat Engine can resolve for the address: a Mono method or debug symbol
 
 ## 🔄 Changelogs
 
+### 🏷️ v1.0.7 — Cleanup & Hardening
+
+*No behaviour change. Generated signatures are identical to 1.0.6.*
+
+* 🧽 **Changed:** All comments stripped from the sources (26 across four files) — the code carries itself.
+* 🛡️ **Fixed:** `CEPlugin_GetVersion` null-checks its `version` pointer before writing to it.
+* 🧩 **Fixed:** `find_module_info` keeps its first module list when the retry pass fails, instead of giving up. Only reachable on processes with more than 1024 modules.
+* 📦 **Fixed:** `<cstdint>` is included explicitly instead of arriving through `Windows.h`.
+
 ### 🏷️ v1.0.6 — Source Layout
 
 *Housekeeping only. Generated signatures are byte-for-byte identical to 1.0.5.*
