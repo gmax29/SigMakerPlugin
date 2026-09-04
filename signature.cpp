@@ -93,6 +93,7 @@ bool build_signature(const ModuleSnapshot& snap, const ZydisDecoder& decoder, UL
                 ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT];
 
                 if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(&decoder, buf + decode_offset, available - decode_offset, &instr, operands))) break;
+                if (instr.mnemonic == ZYDIS_MNEMONIC_INT3) break;
 
                 const auto disp_bytes = static_cast<ZyanU8>(instr.raw.disp.size / 8);
                 const auto imm0_bytes = static_cast<ZyanU8>(instr.raw.imm[0].size / 8);
@@ -132,7 +133,6 @@ bool build_signature(const ModuleSnapshot& snap, const ZydisDecoder& decoder, UL
 
                 if (!have_candidates) {
                     if (!scan_snapshot(snap, view, candidates, MAX_HITS)) continue;
-                    clip(candidates);
                     have_candidates = true;
                 }
                 else {
@@ -147,6 +147,21 @@ bool build_signature(const ModuleSnapshot& snap, const ZydisDecoder& decoder, UL
                     best_offset = anchor_offset;
                     found = true;
                     break;
+                }
+            }
+
+            if (!found && have_candidates && !pattern.empty()) {
+                auto trimmed = pattern.size();
+                while (trimmed > 0 && pattern[trimmed - 1].masked) --trimmed;
+
+                std::vector<ULONG_PTR> scoped = candidates;
+                clip(scoped);
+
+                if (trimmed > 0 && scoped.size() == 1 && scoped[0] == anchor_addr) {
+                    pattern.resize(trimmed);
+                    best_pattern = std::move(pattern);
+                    best_offset = anchor_offset;
+                    found = true;
                 }
             }
         }

@@ -86,6 +86,22 @@ Whatever Cheat Engine can resolve for the address: a Mono method or debug symbol
 
 ## 🔄 Changelogs
 
+### 🧪 v0.0.7-beta — Stop at int3
+
+* 🐛 **Fixed:** 0.0.6 restricted *two* things to the enclosing function, the pattern
+  length and the uniqueness check. The second one was wrong: inside a single function three
+  bytes are already unique, which is useless once the game updates. Uniqueness is searched
+  module-wide again.
+* ✂️ **Changed:** the pattern now stops growing when the decoder hits `int 3`, so it ends
+  on the last real instruction instead of running into the `CC` padding and the next
+  function. On the test module this yields 32 bytes ending on `E9`, where 0.0.5 ran to 37
+  bytes past the boundary and 0.0.6 collapsed to 4.
+* 🛟 **New:** if the room up to the padding is not enough for module-wide uniqueness, the
+  pattern is accepted when it is at least unique inside the function, which is all
+  `aobscanfunction` requires. Only when that fails too does it report an error.
+
+---
+
 ### 🧪 v0.0.6-beta — Function Bounds & Reassemble
 
 * 🐛 **Fixed:** the pattern grew past the end of the enclosing function, into the `CC`
