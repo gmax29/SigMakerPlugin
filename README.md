@@ -86,6 +86,27 @@ Whatever Cheat Engine can resolve for the address: a Mono method or debug symbol
 
 ## 🔄 Changelogs
 
+### 🧪 v0.0.4-beta — Auto Assembler Generator
+
+*Preview build, sitting beside the 1.0.x line rather than in it. The signature engine is
+unchanged from 1.0.7 — this only adds the script generator on top.*
+
+* 🧰 **New:** Context menu entry **Generate AA Script** builds a complete injection script:
+  header block, `aobscanmodule`, `alloc`, injection point, `[DISABLE]` restore and the
+  ORIGINAL CODE comment block. Lands on the clipboard, paste it into the Auto Assemble window.
+* 🎛️ **New:** Dialog for symbol name, description, version, author, byte count,
+  newmem code block (reassemble or `readmem`), restore style (`db` bytes or `readmem`) and
+  which labels get a `registersymbol`.
+* 📐 **New:** The byte count is a *minimum*. It is always rounded up to whole
+  instructions, so an instruction is never cut in half: 3 becomes 6, 5 becomes 6, 14 becomes 16.
+  Below 5 it is raised silently, otherwise the `jmp` would not fit.
+* 💾 **New:** Settings persist in `SigMaker.ini` next to the DLL.
+* ⚠️ **Untested in Cheat Engine.** Builds clean and the generator was verified against
+  synthetic memory, but the dialog and the emitted script have not been run against a live
+  game yet. Treat it as a beta.
+
+---
+
 ### 🏷️ v1.0.7 — Cleanup & Hardening
 
 *No behaviour change. Generated signatures are identical to 1.0.6.*
