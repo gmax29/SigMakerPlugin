@@ -12,6 +12,7 @@ static CE_EXPORTED_FUNCTIONS exports;
 static CE_DISASSEMBLER_CONTEXT_INIT ctx_aob;
 static CE_DISASSEMBLER_CONTEXT_INIT ctx_cpp;
 static CE_DISASSEMBLER_CONTEXT_INIT ctx_addr;
+static CE_DISASSEMBLER_CONTEXT_INIT ctx_aa;
 
 static bool is_all_hex(const std::string& s) {
     if (s.empty()) return false;
@@ -163,6 +164,52 @@ BOOL CE_CONV on_copy_addr(uintptr_t* selected_address) {
     return TRUE;
 }
 
+BOOL CE_CONV on_aa_script(uintptr_t* selected_address) {
+    if (!selected_address || !exports.OpenedProcessHandle) return TRUE;
+
+    const HANDLE handle = *exports.OpenedProcessHandle;
+    const auto address = static_cast<ULONG_PTR>(*selected_address);
+
+    ModuleSnapshot snap;
+    ZydisDecoder decoder;
+    SignatureResult sig;
+
+    if (!prepare(handle, address, snap, decoder, sig)) {
+        set_clipboard(sig.error);
+        return TRUE;
+    }
+
+    AaOptions opt;
+    aa_load_settings(opt);
+
+    std::string name;
+    if (ce_name_at(address, name)) {
+        std::string base;
+        ULONG_PTR off = 0;
+        split_symbol(name, base, off);
+        if (!is_all_hex(base)) opt.base_name = sanitize_symbol(base);
+    }
+    if (opt.base_name.empty()) {
+        std::string mod = snap.mod_name;
+        if (const auto dot = mod.find_last_of('.'); dot != std::string::npos) mod.erase(dot);
+        opt.base_name = sanitize_symbol(std::format("{}_{:X}", mod, address - snap.mod_base));
+    }
+
+    HWND parent = exports.GetMainWindowHandle ? static_cast<HWND>(exports.GetMainWindowHandle()) : nullptr;
+    if (!aa_show_dialog(parent, opt)) return TRUE;
+
+    std::vector<StolenInstr> stolen;
+    SIZE_T stolen_len = 0;
+    if (!collect_stolen(snap, decoder, address, static_cast<SIZE_T>(opt.min_bytes), stolen, stolen_len)) {
+        set_clipboard("ERROR: Could not decode enough bytes at the injection point.");
+        return TRUE;
+    }
+
+    aa_save_settings(opt);
+    set_clipboard(aa_build_script(snap, decoder, address, sig, stolen, stolen_len, opt));
+    return TRUE;
+}
+
 BOOL CE_CONV on_rightclick(uintptr_t selected_address, const char** name_address, BOOL* show) {
     return TRUE;
 }
@@ -192,6 +239,11 @@ extern "C" __declspec(dllexport) BOOL CE_CONV CEPlugin_InitializePlugin(CE_EXPOR
     ctx_addr.callback_routine = &on_copy_addr;
     ctx_addr.callback_routine_onpopup = &on_rightclick;
     exports.RegisterFunction(pluginid, CE_PLUGIN_TYPE_DISASSEMBLER_CONTEXT, &ctx_addr);
+
+    ctx_aa.name = "Generate AA Script";
+    ctx_aa.callback_routine = &on_aa_script;
+    ctx_aa.callback_routine_onpopup = &on_rightclick;
+    exports.RegisterFunction(pluginid, CE_PLUGIN_TYPE_DISASSEMBLER_CONTEXT, &ctx_aa);
 
     return TRUE;
 }

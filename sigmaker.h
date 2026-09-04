@@ -87,3 +87,36 @@ void init_decoder(HANDLE handle, ZydisDecoder& decoder);
 
 [[nodiscard]] bool build_signature(const ModuleSnapshot& snap, const ZydisDecoder& decoder,
     ULONG_PTR address, SignatureResult& out);
+
+struct AaOptions {
+    std::string base_name;
+    std::string description;
+    std::string author;
+    std::string version;
+    int min_bytes = 5;
+    int code_mode = 0;
+    int restore_mode = 0;
+    bool reg_newmem = false;
+    bool reg_code = false;
+    bool reg_return = false;
+    std::string extra_symbols;
+    bool accepted = false;
+};
+
+struct StolenInstr {
+    ULONG_PTR addr = 0;
+    uint8_t len = 0;
+    std::string text;
+    bool position_dependent = false;
+};
+
+[[nodiscard]] bool collect_stolen(const ModuleSnapshot& snap, const ZydisDecoder& decoder, ULONG_PTR address,
+    SIZE_T min_bytes, std::vector<StolenInstr>& out, SIZE_T& total_len);
+
+std::string sanitize_symbol(const std::string& in);
+void aa_load_settings(AaOptions& opt);
+void aa_save_settings(const AaOptions& opt);
+bool aa_show_dialog(HWND parent, AaOptions& opt);
+
+std::string aa_build_script(const ModuleSnapshot& snap, const ZydisDecoder& decoder, ULONG_PTR address,
+    const SignatureResult& sig, const std::vector<StolenInstr>& stolen, SIZE_T stolen_len, const AaOptions& opt);
