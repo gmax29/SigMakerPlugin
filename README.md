@@ -86,6 +86,22 @@ Whatever Cheat Engine can resolve for the address: a Mono method or debug symbol
 
 ## 🔄 Changelogs
 
+### 🧪 v0.0.5-beta — Far Jumps & Function Scans
+
+* 🐛 **Fixed:** the 14 byte mode produced a broken script. The `nop` padding was always
+  computed against a 5 byte jump, so stealing 18 bytes emitted `nop 13` instead of `nop 4`.
+  The jump size now drives everything: 5 uses `jmp` with an anchored `alloc`, 14 uses
+  `jmp far` with a plain `alloc`, and the padding follows.
+* 🎯 **Changed:** the scan line is now `aobscanfunction` against the enclosing function
+  symbol from Cheat Engine, falling back to `aobscanmodule` when no symbol is known.
+* 🗃️ **New:** the finished script is inserted into the cheat table automatically,
+  on top of landing on the clipboard.
+* 🎛️ **Changed:** the dialog shows the resolved **Address** read-only and takes the
+  **Symbol** separately, pre-filled with `INJECT`. The register symbol checkboxes are gone,
+  the generator sets those itself.
+
+---
+
 ### 🧪 v0.0.4-beta — Auto Assembler Generator
 
 *Preview build, sitting beside the 1.0.x line rather than in it. The signature engine is

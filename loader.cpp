@@ -164,6 +164,18 @@ BOOL CE_CONV on_copy_addr(uintptr_t* selected_address) {
     return TRUE;
 }
 
+static bool create_table_entry(const std::string& description, const std::string& script) {
+    if (!exports.createTableEntry || !exports.memrec_setDescription || !exports.memrec_setScript || !exports.memrec_setType) return false;
+
+    void* record = exports.createTableEntry();
+    if (!record) return false;
+
+    exports.memrec_setDescription(record, description.c_str());
+    exports.memrec_setType(record, 11);
+    exports.memrec_setScript(record, script.c_str());
+    return true;
+}
+
 BOOL CE_CONV on_aa_script(uintptr_t* selected_address) {
     if (!selected_address || !exports.OpenedProcessHandle) return TRUE;
 
@@ -181,18 +193,16 @@ BOOL CE_CONV on_aa_script(uintptr_t* selected_address) {
 
     AaOptions opt;
     aa_load_settings(opt);
+    if (opt.symbol.empty()) opt.symbol = "INJECT";
+
+    opt.address_text = describe_address(handle, address);
 
     std::string name;
     if (ce_name_at(address, name)) {
         std::string base;
         ULONG_PTR off = 0;
         split_symbol(name, base, off);
-        if (!is_all_hex(base)) opt.base_name = sanitize_symbol(base);
-    }
-    if (opt.base_name.empty()) {
-        std::string mod = snap.mod_name;
-        if (const auto dot = mod.find_last_of('.'); dot != std::string::npos) mod.erase(dot);
-        opt.base_name = sanitize_symbol(std::format("{}_{:X}", mod, address - snap.mod_base));
+        if (!is_all_hex(base) && base.find(':') != std::string::npos) opt.function_symbol = base;
     }
 
     HWND parent = exports.GetMainWindowHandle ? static_cast<HWND>(exports.GetMainWindowHandle()) : nullptr;
@@ -206,9 +216,13 @@ BOOL CE_CONV on_aa_script(uintptr_t* selected_address) {
     }
 
     aa_save_settings(opt);
-    set_clipboard(aa_build_script(snap, decoder, address, sig, stolen, stolen_len, opt));
+
+    const std::string script = aa_build_script(snap, decoder, address, sig, stolen, stolen_len, opt);
+    set_clipboard(script);
+    create_table_entry(opt.symbol.empty() ? opt.address_text : opt.symbol, script);
     return TRUE;
 }
+
 
 BOOL CE_CONV on_rightclick(uintptr_t selected_address, const char** name_address, BOOL* show) {
     return TRUE;
