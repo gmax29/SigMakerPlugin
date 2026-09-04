@@ -168,8 +168,11 @@ std::string aa_build_script(const ModuleSnapshot& snap, const ZydisDecoder& deco
     b += "code:\n";
 
     if (opt.code_mode == 0) {
-        if (any_relative) b += "  // relative operands below are resolved to absolute addresses\n";
-        for (const auto& s : stolen) b += "  " + (s.text.empty() ? std::string("db 90") : s.text) + "\n";
+        for (const auto& s : stolen) {
+            const ULONG_PTR off = (s.addr - address) + static_cast<ULONG_PTR>(inject_off);
+            b += off ? std::format("  reassemble({}+{:X})\n", sym, off)
+                     : std::format("  reassemble({})\n", sym);
+        }
     }
     else {
         for (const auto& s : stolen) b += std::format("  // {:X}: {}\n", s.addr, s.text);

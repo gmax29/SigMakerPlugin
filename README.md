@@ -86,6 +86,21 @@ Whatever Cheat Engine can resolve for the address: a Mono method or debug symbol
 
 ## 🔄 Changelogs
 
+### 🧪 v0.0.6-beta — Function Bounds & Reassemble
+
+* 🐛 **Fixed:** the pattern grew past the end of the enclosing function, into the `CC`
+  padding and on into the next one. Since `aobscanfunction` only searches inside the
+  function, such a pattern can never be found there and the script refused to enable.
+  The function range now comes from Cheat Engine’s symbol resolver: the pattern stops at
+  the boundary and uniqueness is judged inside the function, which is all
+  `aobscanfunction` needs. On a test module with 192 identical copies of the function this
+  cuts the pattern from 37 bytes to 4.
+* 🔄 **Changed:** the reassemble mode emits `reassemble(INJECT)` per stolen instruction
+  instead of writing out the mnemonics. Cheat Engine re-assembles them itself, which also
+  fixes RIP-relative operands properly rather than papering over them.
+
+---
+
 ### 🧪 v0.0.5-beta — Far Jumps & Function Scans
 
 * 🐛 **Fixed:** the 14 byte mode produced a broken script. The `nop` padding was always
