@@ -86,6 +86,31 @@ Whatever Cheat Engine can resolve for the address: a Mono method or debug symbol
 
 ## 🔄 Changelogs
 
+### 🏷️ v1.0.8 — Auto Assembler Generator
+
+*The generator from the 0.0.4 to 0.0.7 betas, tested in Cheat Engine and promoted to the
+stable line. The signature engine is unchanged from 1.0.7.*
+
+* 🧰 **New:** context menu entry **Generate AA Script** builds a complete injection
+  script: header block, `aobscanfunction` against the enclosing function symbol, `alloc`,
+  injection point, `[DISABLE]` restore and the ORIGINAL CODE comment block. It lands on the
+  clipboard and is inserted into the cheat table as an auto assembler entry.
+* 🎛️ **New:** dialog for the symbol, description, version, author, byte count, the
+  newmem code block (`reassemble` or `readmem`) and the restore style (`db` bytes or
+  `readmem`). Settings persist in `SigMaker.ini` next to the DLL.
+* 📐 **New:** the byte count is a minimum and is rounded up to whole instructions, so an
+  instruction is never cut in half. 5 uses `jmp` with an anchored `alloc`, 14 uses
+  `jmp far` with a plain one, and the `nop` padding follows from the jump size.
+* ✂️ **New:** the pattern stops growing at `int 3`, ending on the last real instruction
+  instead of running into the `CC` padding and the next function. Uniqueness is still
+  searched module-wide, so the signature stays update-resistant; if the room up to the
+  padding is not enough, uniqueness inside the function is accepted, which is all
+  `aobscanfunction` needs.
+* 🔄 **New:** reassemble mode emits `reassemble(INJECT)` per stolen instruction, so Cheat
+  Engine re-assembles them itself and RIP-relative operands are handled properly.
+
+---
+
 ### 🧪 v0.0.7-beta — Stop at int3
 
 * 🐛 **Fixed:** 0.0.6 restricted *two* things to the enclosing function, the pattern

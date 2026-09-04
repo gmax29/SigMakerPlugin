@@ -133,9 +133,6 @@ std::string aa_build_script(const ModuleSnapshot& snap, const ZydisDecoder& deco
     const SIZE_T jump_size = opt.min_bytes >= 14 ? 14 : 5;
     const bool far_jump = jump_size == 14;
 
-    bool any_relative = false;
-    for (const auto& s : stolen) any_relative |= s.position_dependent;
-
     std::string b;
 
     b += "{ Game   : " + snap.mod_name + "\n";
@@ -176,10 +173,6 @@ std::string aa_build_script(const ModuleSnapshot& snap, const ZydisDecoder& deco
     }
     else {
         for (const auto& s : stolen) b += std::format("  // {:X}: {}\n", s.addr, s.text);
-        if (any_relative) {
-            b += "  // WARNING: a stolen instruction is position dependent, readmem copies its\n";
-            b += "  // displacement verbatim and it will point elsewhere from newmem\n";
-        }
         b += std::format("  readmem({},{})\n", inject, stolen_len);
     }
 
