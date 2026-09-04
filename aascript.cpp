@@ -6,6 +6,12 @@
 #include <cstring>
 #include <format>
 
+#include <dwmapi.h>
+#include <uxtheme.h>
+
+#pragma comment(lib, "dwmapi.lib")
+#pragma comment(lib, "uxtheme.lib")
+
 static std::string plugin_dir() {
     HMODULE self = nullptr;
     GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
@@ -41,6 +47,7 @@ void aa_load_settings(AaOptions& opt) {
     opt.min_bytes = GetPrivateProfileIntA("SigMaker", "MinBytes", 5, ini.c_str());
     opt.code_mode = GetPrivateProfileIntA("SigMaker", "CodeMode", 0, ini.c_str());
     opt.restore_mode = GetPrivateProfileIntA("SigMaker", "RestoreMode", 0, ini.c_str());
+    opt.dark = GetPrivateProfileIntA("SigMaker", "Dark", 0, ini.c_str()) != 0;
 }
 
 void aa_save_settings(const AaOptions& opt) {
@@ -53,6 +60,7 @@ void aa_save_settings(const AaOptions& opt) {
     WritePrivateProfileStringA("SigMaker", "MinBytes", std::format("{}", opt.min_bytes).c_str(), ini.c_str());
     WritePrivateProfileStringA("SigMaker", "CodeMode", std::format("{}", opt.code_mode).c_str(), ini.c_str());
     WritePrivateProfileStringA("SigMaker", "RestoreMode", std::format("{}", opt.restore_mode).c_str(), ini.c_str());
+    WritePrivateProfileStringA("SigMaker", "Dark", opt.dark ? "1" : "0", ini.c_str());
 }
 
 bool collect_stolen(const ModuleSnapshot& snap, const ZydisDecoder& decoder, ULONG_PTR address,
@@ -229,11 +237,34 @@ constexpr int ID_ADDR = 100, ID_SYM = 101, ID_DESC = 102, ID_VER = 103, ID_AUTHO
 constexpr int ID_B5 = 110, ID_B14 = 111, ID_BCUSTOM = 112, ID_BVAL = 113;
 constexpr int ID_CODE_ASM = 120, ID_CODE_MEM = 121;
 constexpr int ID_RES_DB = 130, ID_RES_MEM = 131;
+constexpr int ID_DARK = 140;
+
+constexpr COLORREF DARK_BG = RGB(32, 32, 32);
+constexpr COLORREF DARK_FG = RGB(230, 230, 230);
+constexpr COLORREF DARK_FIELD = RGB(45, 45, 48);
 
 struct DlgState {
     AaOptions* opt = nullptr;
     bool done = false;
+    bool dark = false;
+    HBRUSH bg = nullptr;
+    HBRUSH field = nullptr;
 };
+
+BOOL CALLBACK theme_child(HWND child, LPARAM dark) {
+    SetWindowTheme(child, dark ? L"DarkMode_Explorer" : nullptr, nullptr);
+    return TRUE;
+}
+
+void apply_theme(HWND hwnd, bool dark) {
+    const BOOL on = dark ? TRUE : FALSE;
+    if (FAILED(DwmSetWindowAttribute(hwnd, 20, &on, sizeof(on)))) {
+        DwmSetWindowAttribute(hwnd, 19, &on, sizeof(on));
+    }
+    SetWindowTheme(hwnd, dark ? L"DarkMode_Explorer" : nullptr, nullptr);
+    EnumChildWindows(hwnd, theme_child, static_cast<LPARAM>(dark ? 1 : 0));
+    InvalidateRect(hwnd, nullptr, TRUE);
+}
 
 HINSTANCE self_instance() {
     HMODULE self = nullptr;
@@ -257,8 +288,36 @@ LRESULT CALLBACK dlg_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         SetWindowLongPtrA(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
         return 0;
     }
+    case WM_ERASEBKGND:
+        if (st && st->dark) {
+            RECT rc{};
+            GetClientRect(hwnd, &rc);
+            FillRect(reinterpret_cast<HDC>(wp), &rc, st->bg);
+            return 1;
+        }
+        break;
+    case WM_CTLCOLORSTATIC:
+    case WM_CTLCOLORBTN:
+        if (st && st->dark) {
+            SetTextColor(reinterpret_cast<HDC>(wp), DARK_FG);
+            SetBkColor(reinterpret_cast<HDC>(wp), DARK_BG);
+            return reinterpret_cast<LRESULT>(st->bg);
+        }
+        break;
+    case WM_CTLCOLOREDIT:
+        if (st && st->dark) {
+            SetTextColor(reinterpret_cast<HDC>(wp), DARK_FG);
+            SetBkColor(reinterpret_cast<HDC>(wp), DARK_FIELD);
+            return reinterpret_cast<LRESULT>(st->field);
+        }
+        break;
     case WM_COMMAND:
         if (!st) break;
+        if (LOWORD(wp) == ID_DARK) {
+            st->dark = IsDlgButtonChecked(hwnd, ID_DARK) == BST_CHECKED;
+            apply_theme(hwnd, st->dark);
+            return 0;
+        }
         if (LOWORD(wp) == IDOK) {
             AaOptions& o = *st->opt;
             o.symbol = text_of(hwnd, ID_SYM);
@@ -275,6 +334,7 @@ LRESULT CALLBACK dlg_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
             o.code_mode = IsDlgButtonChecked(hwnd, ID_CODE_MEM) == BST_CHECKED ? 1 : 0;
             o.restore_mode = IsDlgButtonChecked(hwnd, ID_RES_MEM) == BST_CHECKED ? 1 : 0;
+            o.dark = st->dark;
             o.accepted = !o.symbol.empty();
 
             st->done = true;
@@ -329,7 +389,9 @@ bool aa_show_dialog(HWND parent, AaOptions& opt) {
     const bool own_font = font != nullptr;
     if (!font) font = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
 
-    DlgState st{ &opt, false };
+    DlgState st{ &opt, false, opt.dark, nullptr, nullptr };
+    st.bg = CreateSolidBrush(DARK_BG);
+    st.field = CreateSolidBrush(DARK_FIELD);
 
     constexpr DWORD style = WS_POPUP | WS_CAPTION | WS_SYSMENU;
     RECT rc{ 0, 0, 470, 452 };
@@ -375,6 +437,8 @@ bool aa_show_dialog(HWND parent, AaOptions& opt) {
     add(hwnd, "BUTTON", "db bytes", WS_TABSTOP | WS_GROUP | BS_AUTORADIOBUTTON, 26, 366, 200, 20, ID_RES_DB, inst, font);
     add(hwnd, "BUTTON", "readmem from copy", WS_TABSTOP | BS_AUTORADIOBUTTON, 243, 366, 200, 20, ID_RES_MEM, inst, font);
 
+    add(hwnd, "BUTTON", "Dark mode", WS_TABSTOP | WS_GROUP | BS_AUTOCHECKBOX, 14, 417, 120, 20, ID_DARK, inst, font);
+
     add(hwnd, "BUTTON", "OK", WS_TABSTOP | BS_DEFPUSHBUTTON, 282, 412, 84, 26, IDOK, inst, font);
     add(hwnd, "BUTTON", "Cancel", WS_TABSTOP | BS_PUSHBUTTON, 374, 412, 84, 26, IDCANCEL, inst, font);
 
@@ -382,6 +446,8 @@ bool aa_show_dialog(HWND parent, AaOptions& opt) {
     CheckRadioButton(hwnd, ID_B5, ID_BCUSTOM, byte_id);
     CheckRadioButton(hwnd, ID_CODE_ASM, ID_CODE_MEM, opt.code_mode == 1 ? ID_CODE_MEM : ID_CODE_ASM);
     CheckRadioButton(hwnd, ID_RES_DB, ID_RES_MEM, opt.restore_mode == 1 ? ID_RES_MEM : ID_RES_DB);
+    CheckDlgButton(hwnd, ID_DARK, opt.dark ? BST_CHECKED : BST_UNCHECKED);
+    apply_theme(hwnd, st.dark);
 
     if (parent) EnableWindow(parent, FALSE);
     ShowWindow(hwnd, SW_SHOW);
@@ -412,6 +478,8 @@ bool aa_show_dialog(HWND parent, AaOptions& opt) {
         SetForegroundWindow(parent);
     }
     if (own_font) DeleteObject(font);
+    if (st.bg) DeleteObject(st.bg);
+    if (st.field) DeleteObject(st.field);
 
     return opt.accepted;
 }

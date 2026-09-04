@@ -86,6 +86,21 @@ Whatever Cheat Engine can resolve for the address: a Mono method or debug symbol
 
 ## 🔄 Changelogs
 
+### 🏷️ v1.0.9 — Dark Mode
+
+* 🌙 **New:** a **Dark mode** checkbox in the generator dialog, switching live and
+  remembered in `SigMaker.ini`. Covers the window background, all labels, the edit fields
+  and the title bar.
+* 🧹 **Changed:** the `readmem` warning comment about position dependent instructions
+  was dropped from the generated script.
+
+> Group box frames and the check marks inside radio buttons are drawn by the Windows theme
+> engine, not by the plugin. They are pulled along with `SetWindowTheme`, which is
+> undocumented and not equally complete on every Windows build, so a light detail may
+> remain here and there.
+
+---
+
 ### 🏷️ v1.0.8 — Auto Assembler Generator
 
 *The generator from the 0.0.4 to 0.0.7 betas, tested in Cheat Engine and promoted to the

@@ -98,6 +98,7 @@ struct AaOptions {
     int min_bytes = 5;
     int code_mode = 0;
     int restore_mode = 0;
+    bool dark = false;
     bool accepted = false;
 };
 
