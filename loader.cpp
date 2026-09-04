@@ -97,7 +97,8 @@ static std::string offset_note(HANDLE handle, ULONG_PTR address, int anchor_offs
     return std::format("// result + 0x{:X} = {}", -anchor_offset, describe_address(handle, address));
 }
 
-static bool prepare(HANDLE handle, ULONG_PTR address, ModuleSnapshot& snap, ZydisDecoder& decoder, SignatureResult& result) {
+static bool prepare(HANDLE handle, ULONG_PTR address, ModuleSnapshot& snap, ZydisDecoder& decoder, SignatureResult& result,
+    ULONG_PTR lo = 0, ULONG_PTR hi = 0) {
     if (address < 0x1000) {
         result.error = "ERROR: Invalid address.";
         return false;
@@ -112,7 +113,7 @@ static bool prepare(HANDLE handle, ULONG_PTR address, ModuleSnapshot& snap, Zydi
     }
 
     init_decoder(handle, decoder);
-    return build_signature(snap, decoder, address, result);
+    return build_signature(snap, decoder, address, result, lo, hi);
 }
 
 BOOL CE_CONV on_copy_aob(uintptr_t* selected_address) {
@@ -164,6 +165,59 @@ BOOL CE_CONV on_copy_addr(uintptr_t* selected_address) {
     return TRUE;
 }
 
+static bool ce_function_range(ULONG_PTR address, std::string& out_name, ULONG_PTR& out_start, ULONG_PTR& out_end) {
+    std::string raw;
+    if (!ce_name_at(address, raw)) return false;
+
+    std::string base;
+    ULONG_PTR offset = 0;
+    split_symbol(raw, base, offset);
+    if (base.empty() || is_all_hex(base) || base.find(':') == std::string::npos) return false;
+    if (offset > address) return false;
+
+    const ULONG_PTR start = address - offset;
+
+    auto same = [&](ULONG_PTR at) {
+        std::string probe, probe_base;
+        ULONG_PTR probe_offset = 0;
+        if (!ce_name_at(at, probe)) return false;
+        split_symbol(probe, probe_base, probe_offset);
+        return probe_base == base;
+        };
+
+    ULONG_PTR good = address;
+    ULONG_PTR step = 0x20;
+    while (step && good + step > good && good + step - start < 0x40000 && same(good + step)) {
+        good += step;
+        step *= 2;
+    }
+
+    ULONG_PTR bad = good + step;
+    if (bad < good) bad = good + 1;
+    while (good + 1 < bad) {
+        const ULONG_PTR mid = good + (bad - good) / 2;
+        if (same(mid)) good = mid;
+        else bad = mid;
+    }
+
+    out_name = base;
+    out_start = start;
+    out_end = good + 1;
+    return out_end > out_start;
+}
+
+static bool create_table_entry(const std::string& description, const std::string& script) {
+    if (!exports.createTableEntry || !exports.memrec_setDescription || !exports.memrec_setScript || !exports.memrec_setType) return false;
+
+    void* record = exports.createTableEntry();
+    if (!record) return false;
+
+    exports.memrec_setDescription(record, description.c_str());
+    exports.memrec_setType(record, 11);
+    exports.memrec_setScript(record, script.c_str());
+    return true;
+}
+
 BOOL CE_CONV on_aa_script(uintptr_t* selected_address) {
     if (!selected_address || !exports.OpenedProcessHandle) return TRUE;
 
@@ -174,26 +228,21 @@ BOOL CE_CONV on_aa_script(uintptr_t* selected_address) {
     ZydisDecoder decoder;
     SignatureResult sig;
 
-    if (!prepare(handle, address, snap, decoder, sig)) {
+    std::string fn_name;
+    ULONG_PTR fn_start = 0, fn_end = 0;
+    const bool have_fn = ce_function_range(address, fn_name, fn_start, fn_end);
+
+    if (!prepare(handle, address, snap, decoder, sig, have_fn ? fn_start : 0, have_fn ? fn_end : 0)) {
         set_clipboard(sig.error);
         return TRUE;
     }
 
     AaOptions opt;
     aa_load_settings(opt);
+    if (opt.symbol.empty()) opt.symbol = "INJECT";
 
-    std::string name;
-    if (ce_name_at(address, name)) {
-        std::string base;
-        ULONG_PTR off = 0;
-        split_symbol(name, base, off);
-        if (!is_all_hex(base)) opt.base_name = sanitize_symbol(base);
-    }
-    if (opt.base_name.empty()) {
-        std::string mod = snap.mod_name;
-        if (const auto dot = mod.find_last_of('.'); dot != std::string::npos) mod.erase(dot);
-        opt.base_name = sanitize_symbol(std::format("{}_{:X}", mod, address - snap.mod_base));
-    }
+    opt.address_text = describe_address(handle, address);
+    if (have_fn) opt.function_symbol = fn_name;
 
     HWND parent = exports.GetMainWindowHandle ? static_cast<HWND>(exports.GetMainWindowHandle()) : nullptr;
     if (!aa_show_dialog(parent, opt)) return TRUE;
@@ -206,9 +255,13 @@ BOOL CE_CONV on_aa_script(uintptr_t* selected_address) {
     }
 
     aa_save_settings(opt);
-    set_clipboard(aa_build_script(snap, decoder, address, sig, stolen, stolen_len, opt));
+
+    const std::string script = aa_build_script(snap, decoder, address, sig, stolen, stolen_len, opt);
+    set_clipboard(script);
+    create_table_entry(opt.symbol.empty() ? opt.address_text : opt.symbol, script);
     return TRUE;
 }
+
 
 BOOL CE_CONV on_rightclick(uintptr_t selected_address, const char** name_address, BOOL* show) {
     return TRUE;

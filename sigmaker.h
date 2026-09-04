@@ -86,20 +86,18 @@ void filter_candidates(const ModuleSnapshot& snap, std::vector<ULONG_PTR>& candi
 void init_decoder(HANDLE handle, ZydisDecoder& decoder);
 
 [[nodiscard]] bool build_signature(const ModuleSnapshot& snap, const ZydisDecoder& decoder,
-    ULONG_PTR address, SignatureResult& out);
+    ULONG_PTR address, SignatureResult& out, ULONG_PTR lo = 0, ULONG_PTR hi = 0);
 
 struct AaOptions {
-    std::string base_name;
+    std::string address_text;
+    std::string function_symbol;
+    std::string symbol = "INJECT";
     std::string description;
     std::string author;
     std::string version;
     int min_bytes = 5;
     int code_mode = 0;
     int restore_mode = 0;
-    bool reg_newmem = false;
-    bool reg_code = false;
-    bool reg_return = false;
-    std::string extra_symbols;
     bool accepted = false;
 };
 

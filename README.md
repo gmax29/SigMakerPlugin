@@ -86,6 +86,78 @@ Whatever Cheat Engine can resolve for the address: a Mono method or debug symbol
 
 ## 🔄 Changelogs
 
+### 🏷️ v1.0.8 — Auto Assembler Generator
+
+*The generator from the 0.0.4 to 0.0.7 betas, tested in Cheat Engine and promoted to the
+stable line. The signature engine is unchanged from 1.0.7.*
+
+* 🧰 **New:** context menu entry **Generate AA Script** builds a complete injection
+  script: header block, `aobscanfunction` against the enclosing function symbol, `alloc`,
+  injection point, `[DISABLE]` restore and the ORIGINAL CODE comment block. It lands on the
+  clipboard and is inserted into the cheat table as an auto assembler entry.
+* 🎛️ **New:** dialog for the symbol, description, version, author, byte count, the
+  newmem code block (`reassemble` or `readmem`) and the restore style (`db` bytes or
+  `readmem`). Settings persist in `SigMaker.ini` next to the DLL.
+* 📐 **New:** the byte count is a minimum and is rounded up to whole instructions, so an
+  instruction is never cut in half. 5 uses `jmp` with an anchored `alloc`, 14 uses
+  `jmp far` with a plain one, and the `nop` padding follows from the jump size.
+* ✂️ **New:** the pattern stops growing at `int 3`, ending on the last real instruction
+  instead of running into the `CC` padding and the next function. Uniqueness is still
+  searched module-wide, so the signature stays update-resistant; if the room up to the
+  padding is not enough, uniqueness inside the function is accepted, which is all
+  `aobscanfunction` needs.
+* 🔄 **New:** reassemble mode emits `reassemble(INJECT)` per stolen instruction, so Cheat
+  Engine re-assembles them itself and RIP-relative operands are handled properly.
+
+---
+
+### 🧪 v0.0.7-beta — Stop at int3
+
+* 🐛 **Fixed:** 0.0.6 restricted *two* things to the enclosing function, the pattern
+  length and the uniqueness check. The second one was wrong: inside a single function three
+  bytes are already unique, which is useless once the game updates. Uniqueness is searched
+  module-wide again.
+* ✂️ **Changed:** the pattern now stops growing when the decoder hits `int 3`, so it ends
+  on the last real instruction instead of running into the `CC` padding and the next
+  function. On the test module this yields 32 bytes ending on `E9`, where 0.0.5 ran to 37
+  bytes past the boundary and 0.0.6 collapsed to 4.
+* 🛟 **New:** if the room up to the padding is not enough for module-wide uniqueness, the
+  pattern is accepted when it is at least unique inside the function, which is all
+  `aobscanfunction` requires. Only when that fails too does it report an error.
+
+---
+
+### 🧪 v0.0.6-beta — Function Bounds & Reassemble
+
+* 🐛 **Fixed:** the pattern grew past the end of the enclosing function, into the `CC`
+  padding and on into the next one. Since `aobscanfunction` only searches inside the
+  function, such a pattern can never be found there and the script refused to enable.
+  The function range now comes from Cheat Engine’s symbol resolver: the pattern stops at
+  the boundary and uniqueness is judged inside the function, which is all
+  `aobscanfunction` needs. On a test module with 192 identical copies of the function this
+  cuts the pattern from 37 bytes to 4.
+* 🔄 **Changed:** the reassemble mode emits `reassemble(INJECT)` per stolen instruction
+  instead of writing out the mnemonics. Cheat Engine re-assembles them itself, which also
+  fixes RIP-relative operands properly rather than papering over them.
+
+---
+
+### 🧪 v0.0.5-beta — Far Jumps & Function Scans
+
+* 🐛 **Fixed:** the 14 byte mode produced a broken script. The `nop` padding was always
+  computed against a 5 byte jump, so stealing 18 bytes emitted `nop 13` instead of `nop 4`.
+  The jump size now drives everything: 5 uses `jmp` with an anchored `alloc`, 14 uses
+  `jmp far` with a plain `alloc`, and the padding follows.
+* 🎯 **Changed:** the scan line is now `aobscanfunction` against the enclosing function
+  symbol from Cheat Engine, falling back to `aobscanmodule` when no symbol is known.
+* 🗃️ **New:** the finished script is inserted into the cheat table automatically,
+  on top of landing on the clipboard.
+* 🎛️ **Changed:** the dialog shows the resolved **Address** read-only and takes the
+  **Symbol** separately, pre-filled with `INJECT`. The register symbol checkboxes are gone,
+  the generator sets those itself.
+
+---
+
 ### 🧪 v0.0.4-beta — Auto Assembler Generator
 
 *Preview build, sitting beside the 1.0.x line rather than in it. The signature engine is
