@@ -147,6 +147,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\..\zydis\amalgamated-dist\Zydis.c" />
+    <ClCompile Include="aascript.cpp" />
     <ClCompile Include="loader.cpp" />
     <ClCompile Include="signature.cpp" />
     <ClCompile Include="snapshot.cpp" />
