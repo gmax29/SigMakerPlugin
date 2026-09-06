@@ -24,3 +24,7 @@
 
 # Extracted copy of the repo, not part of it
 /SigMakerPlugin-main/
+
+# Zydis is vendored locally but not tracked, see CONTRIBUTING.md
+/Zydis.c
+/Zydis.h

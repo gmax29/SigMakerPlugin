@@ -12,19 +12,17 @@ Visual Studio 2022 or newer, C++20, Windows SDK.
 msbuild SigMakerPlugin.vcxproj /t:Rebuild /p:Configuration=Release /p:Platform=x64
 ```
 
-**One thing will trip you up on a fresh clone.** The project compiles Zydis from
-`..\..\zydis\amalgamated-dist\Zydis.c`, a path *outside* the repository, while
-`#include "Zydis.h"` resolves to the copy in the repository root. On any machine but the
-author's that first path does not exist and the build fails.
+**Zydis is not in this repository and you have to supply it.** It is 17 MB of generated
+code, so it is deliberately not tracked. Fetch the amalgamated distribution — the single
+`Zydis.h` / `Zydis.c` pair — from [the Zydis project](https://github.com/zyantific/zydis)
+and put it where the build expects it.
 
-Two ways out:
-
-- point the `ClCompile` entry in `SigMakerPlugin.vcxproj` at the local `Zydis.c` and add
-  the repository root to the include directories, or
-- drop the amalgamated Zydis distribution at that relative path
-
-The two copies differ by exactly one line — the local one uses `#include <Zydis.h>`, the
-external one uses quotes — so either builds the same code.
+The project file compiles `..\..\zydis\amalgamated-dist\Zydis.c`, a path *outside* the
+repository, and `#include "Zydis.h"` resolves next to the including source. The simplest
+setup is to drop both files in the repository root and point the `ClCompile` entry in
+`SigMakerPlugin.vcxproj` at the local `Zydis.c`; the root is then already on the include
+path. Either way, `Zydis.c` must use `#include "Zydis.h"` with quotes, or the include
+directory has to be added explicitly.
 
 ## Layout
 

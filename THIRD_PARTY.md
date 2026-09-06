@@ -8,8 +8,10 @@ the source tree.
 
 ## Zydis — Zyan Disassembler Library
 
-Original author: Florian Bernd. Distributed under the MIT licence. The full notice as
-shipped with the amalgamated `Zydis.h` / `Zydis.c` in this repository:
+Original author: Florian Bernd. Distributed under the MIT licence. Zydis itself is not
+tracked in this repository — see [CONTRIBUTING.md](CONTRIBUTING.md) for how to obtain it —
+but it *is* compiled into `SigMakerPlugin.dll`, so its notice has to travel with the
+binary. The full text as shipped in the amalgamated `Zydis.h` / `Zydis.c`:
 
 ```
 Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -31,8 +33,8 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-The complete header, including the copyright line, sits at the top of `Zydis.h` and
-`Zydis.c`.
+The complete header, including the copyright line, sits at the top of the amalgamated
+`Zydis.h` and `Zydis.c` you supply when building.
 
 ---
 
