@@ -229,6 +229,17 @@ unchanged from 1.0.7 — this only adds the script generator on top.*
 
 ---
 
+## 📄 License
+
+Released under the **MIT License** — see [LICENSE](LICENSE). Use it, change it, ship it,
+just keep the copyright notice with it.
+
+Zydis is compiled into the DLL and carries its own MIT licence. Its notice lives in
+[THIRD_PARTY.md](THIRD_PARTY.md); **include that file when you hand out the DLL on its
+own**, since the licence has to travel with binaries too.
+
+---
+
 ## 👏 Credits
 
 👨‍💻 Developed by **gmax17**.
