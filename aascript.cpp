@@ -206,7 +206,16 @@ std::string aa_build_script(const ModuleSnapshot& snap, const ZydisDecoder& deco
         }
     }
     else {
-        for (const auto& s : stolen) b += std::format("  // {:X}: {}\n", s.addr, s.text);
+        bool relative = false;
+        for (const auto& s : stolen) {
+            b += std::format("  // {:X}: {}{}\n", s.addr, s.text, s.position_dependent ? "   <-- position dependent" : "");
+            if (s.position_dependent) relative = true;
+        }
+        if (relative) {
+            b += "  // WARNING: readmem copies the marked instructions byte for byte, so they\n";
+            b += "  // resolve from newmem instead of from their original address and will\n";
+            b += "  // jump or read somewhere else. Use the reassemble mode here.\n";
+        }
         b += std::format("  readmem({},{})\n", inject, stolen_len);
     }
 
