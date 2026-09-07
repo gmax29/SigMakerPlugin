@@ -42,7 +42,7 @@ static void collect_anchors(const ZydisDecoder& decoder, const uint8_t* window, 
 }
 
 bool build_signature(const ModuleSnapshot& snap, const ZydisDecoder& decoder, ULONG_PTR address, SignatureResult& out,
-    ULONG_PTR lo, ULONG_PTR hi, SIZE_T min_span) {
+    ULONG_PTR lo, ULONG_PTR hi, ULONG_PTR min_end) {
     const SnapshotRegion* reg = snap.region_of(address);
     if (!reg) {
         out.error = "ERROR: Address is not inside a readable executable region of the module.";
@@ -144,7 +144,7 @@ bool build_signature(const ModuleSnapshot& snap, const ZydisDecoder& decoder, UL
                 if (!std::binary_search(candidates.begin(), candidates.end(), anchor_addr)) break;
 
                 if (candidates.size() == 1) {
-                    if (trimmed < min_span) {
+                    if (min_end && anchor_addr + trimmed < min_end) {
                         span_blocked = true;
                         continue;
                     }
@@ -164,14 +164,16 @@ bool build_signature(const ModuleSnapshot& snap, const ZydisDecoder& decoder, UL
                 std::vector<ULONG_PTR> scoped = candidates;
                 clip(scoped);
 
-                if (trimmed >= min_span && trimmed > 0 && scoped.size() == 1 && scoped[0] == anchor_addr) {
+                const bool spans = !min_end || anchor_addr + trimmed >= min_end;
+
+                if (spans && trimmed > 0 && scoped.size() == 1 && scoped[0] == anchor_addr) {
                     pattern.resize(trimmed);
                     best_pattern = std::move(pattern);
                     best_offset = anchor_offset;
                     best_module_unique = (candidates.size() == 1);
                     found = true;
                 }
-                else if (trimmed > 0 && trimmed < min_span) {
+                else if (trimmed > 0 && !spans) {
                     span_blocked = true;
                 }
             }
@@ -180,7 +182,8 @@ bool build_signature(const ModuleSnapshot& snap, const ZydisDecoder& decoder, UL
 
     if (!found) {
         out.error = span_blocked
-            ? std::format("ERROR: No unique pattern of at least {} bytes fits before the end of the function.", min_span)
+            ? std::format("ERROR: No unique pattern reaches the {} bytes the script overwrites. "
+                "The code ends too soon. Pick an earlier address or a shorter jump.", min_end - address)
             : std::string("ERROR: Signature too generic. No unique pattern found within scan range.");
         return false;
     }

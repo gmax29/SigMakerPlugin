@@ -98,7 +98,7 @@ static std::string offset_note(HANDLE handle, ULONG_PTR address, int anchor_offs
 }
 
 static bool prepare(HANDLE handle, ULONG_PTR address, ModuleSnapshot& snap, ZydisDecoder& decoder, SignatureResult& result,
-    ULONG_PTR lo = 0, ULONG_PTR hi = 0, SIZE_T min_span = 0) {
+    ULONG_PTR lo = 0, ULONG_PTR hi = 0, ULONG_PTR min_end = 0) {
     if (address < 0x1000) {
         result.error = "ERROR: Invalid address.";
         return false;
@@ -113,7 +113,7 @@ static bool prepare(HANDLE handle, ULONG_PTR address, ModuleSnapshot& snap, Zydi
     }
 
     init_decoder(handle, decoder);
-    return build_signature(snap, decoder, address, result, lo, hi, min_span);
+    return build_signature(snap, decoder, address, result, lo, hi, min_end);
 }
 
 BOOL CE_CONV on_copy_aob(uintptr_t* selected_address) {
@@ -156,6 +156,7 @@ BOOL CE_CONV on_copy_cpp(uintptr_t* selected_address) {
 
     std::string out = std::format("{}\n{}", sig.data.cpp_pattern, sig.data.cpp_mask);
     if (const std::string note = offset_note(handle, address, sig.anchor_offset); !note.empty()) out += "\n" + note;
+    if (!sig.module_unique) out += "\n// unique only inside the enclosing function, not module wide";
 
     set_clipboard(out);
     return TRUE;
@@ -259,9 +260,12 @@ BOOL CE_CONV on_aa_script(uintptr_t* selected_address) {
         return TRUE;
     }
 
-    if (sig.data.cpp_mask.size() < stolen_len) {
+    const ULONG_PTR patch_end = address + stolen_len;
+    const ULONG_PTR sig_end = address + sig.anchor_offset + sig.data.cpp_mask.size();
+
+    if (sig_end < patch_end) {
         SignatureResult wider;
-        if (!build_signature(snap, decoder, address, wider, have_fn ? fn_start : 0, have_fn ? fn_end : 0, stolen_len)) {
+        if (!build_signature(snap, decoder, address, wider, have_fn ? fn_start : 0, have_fn ? fn_end : 0, patch_end)) {
             set_clipboard(wider.error);
             return TRUE;
         }

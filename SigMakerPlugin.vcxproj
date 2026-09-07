@@ -75,6 +75,7 @@
       <WarningLevel>Level3</WarningLevel>
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>ZYDIS_STATIC_BUILD;ZYCORE_STATIC_BUILD</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
@@ -93,6 +94,7 @@
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>ZYDIS_STATIC_BUILD;ZYCORE_STATIC_BUILD</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
@@ -109,6 +111,7 @@
       <WarningLevel>Level3</WarningLevel>
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>ZYDIS_STATIC_BUILD;ZYCORE_STATIC_BUILD</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
@@ -127,6 +130,7 @@
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>ZYDIS_STATIC_BUILD;ZYCORE_STATIC_BUILD</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
@@ -139,14 +143,14 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClInclude Include="..\..\zydis\amalgamated-dist\Zydis.h" />
+    <ClInclude Include="Zydis.h" />
     <ClInclude Include="framework.h" />
     <ClInclude Include="loader.h" />
     <ClInclude Include="sigmaker.h" />
     <ClInclude Include="sdk.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="..\..\zydis\amalgamated-dist\Zydis.c" />
+    <ClCompile Include="Zydis.c" />
     <ClCompile Include="aascript.cpp" />
     <ClCompile Include="loader.cpp" />
     <ClCompile Include="signature.cpp" />

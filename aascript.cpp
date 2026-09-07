@@ -377,6 +377,10 @@ LRESULT CALLBACK dlg_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (st) st->done = true;
         DestroyWindow(hwnd);
         return 0;
+    case WM_DESTROY:
+        if (st) st->done = true;
+        SetWindowLongPtrA(hwnd, GWLP_USERDATA, 0);
+        return 0;
     }
     return DefWindowProcA(hwnd, msg, wp, lp);
 }
@@ -497,6 +501,11 @@ bool aa_show_dialog(HWND parent, AaOptions& opt) {
             TranslateMessage(&msg);
             DispatchMessageA(&msg);
         }
+    }
+
+    if (IsWindow(hwnd)) {
+        SetWindowLongPtrA(hwnd, GWLP_USERDATA, 0);
+        DestroyWindow(hwnd);
     }
 
     if (parent) {

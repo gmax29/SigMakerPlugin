@@ -110,6 +110,9 @@ static void read_region_runs(HANDLE handle, ULONG_PTR base, SIZE_T size, std::ve
 }
 
 bool capture_snapshot(HANDLE handle, ULONG_PTR address, ModuleSnapshot& snap) {
+    snap.regions.clear();
+    snap.has_module = false;
+
     char name[MAX_PATH] = {};
     ULONG_PTR mod_base = 0;
     SIZE_T mod_size = 0;
@@ -180,7 +183,7 @@ bool scan_snapshot(const ModuleSnapshot& snap, std::span<const PatternByte> pat,
         if (r.size < pat.size()) continue;
         size_t off = 0;
         while (off + pat.size() <= r.size) {
-            const size_t len = std::min(SCAN_CHUNK, r.size - off);
+            const size_t len = std::min<size_t>(SCAN_CHUNK, r.size - off);
             chunks.push_back({ r.bytes.get() + off, len, r.base + off });
             if (len < SCAN_CHUNK) break;
             off += len - (pat.size() - 1);

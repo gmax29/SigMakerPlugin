@@ -17,12 +17,10 @@ code, so it is deliberately not tracked. Fetch the amalgamated distribution — 
 `Zydis.h` / `Zydis.c` pair — from [the Zydis project](https://github.com/zyantific/zydis)
 and put it where the build expects it.
 
-The project file compiles `..\..\zydis\amalgamated-dist\Zydis.c`, a path *outside* the
-repository, and `#include "Zydis.h"` resolves next to the including source. The simplest
-setup is to drop both files in the repository root and point the `ClCompile` entry in
-`SigMakerPlugin.vcxproj` at the local `Zydis.c`; the root is then already on the include
-path. Either way, `Zydis.c` must use `#include "Zydis.h"` with quotes, or the include
-directory has to be added explicitly.
+Drop the unmodified `Zydis.h` and `Zydis.c` in the repository root. The project compiles
+them from there and puts the root on the include path, so the amalgamated `Zydis.c` works
+as generated, with its `#include <Zydis.h>` unchanged. Both files are in `.gitignore` and
+are never committed; they are only ever linked into `SigMakerPlugin.dll`.
 
 ## Layout
 
@@ -42,13 +40,14 @@ else to the code. File-local helpers are `static`. Identifiers and strings are E
 
 ## Testing
 
-There is no test project in the repository. Tests are written as standalone programs that
-`#include` the `.cpp` files directly and run against synthetic memory, so no Cheat Engine
-and no target process are needed:
+Tests live in `tests/` as standalone programs that `#include` the `.cpp` files directly and
+run against synthetic memory, so no Cheat Engine and no target process are needed. See
+[tests/README.md](tests/README.md) for what is covered. Build one with:
 
 ```
-cl /nologo /std:c++20 /EHsc /O2 /MD /I. your_test.cpp path\to\Zydis.obj ^
-   /Fe:your_test.exe /link /SUBSYSTEM:CONSOLE user32.lib gdi32.lib psapi.lib
+cl /nologo /std:c++20 /EHsc /O2 /MD /DZYDIS_STATIC_BUILD /DZYCORE_STATIC_BUILD /I.. ^
+   your_test.cpp ..\SigMakerPlugin\x64\Release\Zydis.obj /Fe:your_test.exe ^
+   /link /SUBSYSTEM:CONSOLE user32.lib gdi32.lib psapi.lib dwmapi.lib uxtheme.lib
 ```
 
 Build a `ModuleSnapshot` by hand, plant known bytes, and assert on the result. The
