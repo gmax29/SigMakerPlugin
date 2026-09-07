@@ -234,8 +234,9 @@ std::string aa_build_script(const ModuleSnapshot& snap, const ZydisDecoder& deco
 
     if (opt.restore_mode == 1) {
         b += std::format("  readmem({},{})\n\n", restore, stolen_len);
-        b += "unregistersymbol(*)\n";
-        b += "dealloc(*)\n";
+        b += std::format("unregistersymbol({})\n", sym);
+        b += std::format("unregistersymbol({})\n", restore);
+        b += "dealloc(newmem)\n";
     }
     else {
         b += "  db " + byte_list(snap, address, stolen_len) + "\n\n";
@@ -396,20 +397,28 @@ HWND add(HWND parent, const char* cls, const char* text, DWORD style, int x, int
 }
 
 
+static const char* const DLG_CLASS = "SigMakerAaDialog";
+static bool class_registered = false;
+
+void aa_shutdown() {
+    if (!class_registered) return;
+    UnregisterClassA(DLG_CLASS, self_instance());
+    class_registered = false;
+}
+
 bool aa_show_dialog(HWND parent, AaOptions& opt) {
     const HINSTANCE inst = self_instance();
 
-    static bool registered = false;
-    if (!registered) {
+    if (!class_registered) {
         WNDCLASSEXA wc{};
         wc.cbSize = sizeof(wc);
         wc.lpfnWndProc = dlg_proc;
         wc.hInstance = inst;
         wc.hCursor = LoadCursorA(nullptr, IDC_ARROW);
         wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
-        wc.lpszClassName = "SigMakerAaDialog";
+        wc.lpszClassName = DLG_CLASS;
         if (!RegisterClassExA(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return false;
-        registered = true;
+        class_registered = true;
     }
 
     HFONT font = nullptr;
@@ -428,7 +437,7 @@ bool aa_show_dialog(HWND parent, AaOptions& opt) {
     AdjustWindowRect(&rc, style, FALSE);
     const int w = rc.right - rc.left, h = rc.bottom - rc.top;
 
-    HWND hwnd = CreateWindowExA(WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT, "SigMakerAaDialog",
+    HWND hwnd = CreateWindowExA(WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT, DLG_CLASS,
         "Generate Auto Assembler Script", style,
         (GetSystemMetrics(SM_CXSCREEN) - w) / 2, (GetSystemMetrics(SM_CYSCREEN) - h) / 2,
         w, h, parent, nullptr, inst, &st);

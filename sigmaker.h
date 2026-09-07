@@ -117,6 +117,7 @@ std::string sanitize_symbol(const std::string& in);
 void aa_load_settings(AaOptions& opt);
 void aa_save_settings(const AaOptions& opt);
 bool aa_show_dialog(HWND parent, AaOptions& opt);
+void aa_shutdown();
 
 std::string aa_build_script(const ModuleSnapshot& snap, const ZydisDecoder& decoder, ULONG_PTR address,
     const SignatureResult& sig, const std::vector<StolenInstr>& stolen, SIZE_T stolen_len, const AaOptions& opt);

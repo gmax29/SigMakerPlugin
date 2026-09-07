@@ -143,11 +143,26 @@ bool capture_snapshot(HANDLE handle, ULONG_PTR address, ModuleSnapshot& snap) {
         const auto region_base = reinterpret_cast<ULONG_PTR>(mbi.BaseAddress);
         const bool usable = mbi.State == MEM_COMMIT && (mbi.Protect & EXEC_MASK) != 0 && (mbi.Protect & PAGE_GUARD) == 0;
 
-        if (usable && region_base >= mod_base) {
-            const ULONG_PTR offset = region_base - mod_base;
+        if (usable) {
+            ULONG_PTR start = region_base;
             SIZE_T len = mbi.RegionSize;
-            if (offset < mod_size && offset + len > mod_size) len = mod_size - offset;
-            read_region_runs(handle, region_base, len, snap.regions);
+
+            if (start < mod_base) {
+                const SIZE_T skip = static_cast<SIZE_T>(mod_base - start);
+                if (skip < len) {
+                    start = mod_base;
+                    len -= skip;
+                }
+                else {
+                    len = 0;
+                }
+            }
+
+            const ULONG_PTR offset = start - mod_base;
+            if (len > 0 && offset < mod_size) {
+                if (offset + len > mod_size) len = static_cast<SIZE_T>(mod_size - offset);
+                read_region_runs(handle, start, len, snap.regions);
+            }
         }
 
         const ULONG_PTR next = region_base + mbi.RegionSize;

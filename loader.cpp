@@ -45,8 +45,6 @@ static void set_clipboard(const std::string& str) {
         ~ClipboardScope() { CloseClipboard(); }
     } scope;
 
-    EmptyClipboard();
-
     HGLOBAL buf = GlobalAlloc(GMEM_MOVEABLE, str.size() + 1);
     if (!buf) return;
 
@@ -58,6 +56,8 @@ static void set_clipboard(const std::string& str) {
 
     std::memcpy(locked, str.c_str(), str.size() + 1);
     GlobalUnlock(buf);
+
+    EmptyClipboard();
 
     if (!SetClipboardData(CF_TEXT, buf)) GlobalFree(buf);
 }
@@ -320,5 +320,6 @@ extern "C" __declspec(dllexport) BOOL CE_CONV CEPlugin_InitializePlugin(CE_EXPOR
 }
 
 extern "C" __declspec(dllexport) BOOL CE_CONV CEPlugin_DisablePlugin() {
+    aa_shutdown();
     return TRUE;
 }
