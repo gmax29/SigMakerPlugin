@@ -24,3 +24,7 @@ silently while fixing them:
 - a match straddling a scan chunk boundary is found exactly once, at the right address
 - a pattern larger than one chunk is refused instead of underflowing the length arithmetic
 - `collect_stolen` refuses to steal across `int 3` padding into the next function
+- every instruction form `readmem` could copy is classified correctly, in 64 and 32 bit:
+  branch relative and rip relative forms are flagged, while a plain `disp32` operand, an
+  indirect call through a register, an absolute immediate and 32 bit absolute addressing
+  are not — those are the cases a naive "has a displacement" check would get wrong
