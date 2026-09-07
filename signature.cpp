@@ -42,7 +42,7 @@ static void collect_anchors(const ZydisDecoder& decoder, const uint8_t* window, 
 }
 
 bool build_signature(const ModuleSnapshot& snap, const ZydisDecoder& decoder, ULONG_PTR address, SignatureResult& out,
-    ULONG_PTR lo, ULONG_PTR hi) {
+    ULONG_PTR lo, ULONG_PTR hi, SIZE_T min_span) {
     const SnapshotRegion* reg = snap.region_of(address);
     if (!reg) {
         out.error = "ERROR: Address is not inside a readable executable region of the module.";
@@ -69,7 +69,9 @@ bool build_signature(const ModuleSnapshot& snap, const ZydisDecoder& decoder, UL
 
     std::vector<PatternByte> best_pattern;
     int best_offset = 0;
+    bool best_module_unique = false;
     bool found = false;
+    bool span_blocked = false;
 
     for (SIZE_T anchor : anchors) {
         if (found) break;
@@ -142,9 +144,14 @@ bool build_signature(const ModuleSnapshot& snap, const ZydisDecoder& decoder, UL
                 if (!std::binary_search(candidates.begin(), candidates.end(), anchor_addr)) break;
 
                 if (candidates.size() == 1) {
+                    if (trimmed < min_span) {
+                        span_blocked = true;
+                        continue;
+                    }
                     pattern.resize(trimmed);
                     best_pattern = std::move(pattern);
                     best_offset = anchor_offset;
+                    best_module_unique = true;
                     found = true;
                     break;
                 }
@@ -157,18 +164,24 @@ bool build_signature(const ModuleSnapshot& snap, const ZydisDecoder& decoder, UL
                 std::vector<ULONG_PTR> scoped = candidates;
                 clip(scoped);
 
-                if (trimmed > 0 && scoped.size() == 1 && scoped[0] == anchor_addr) {
+                if (trimmed >= min_span && trimmed > 0 && scoped.size() == 1 && scoped[0] == anchor_addr) {
                     pattern.resize(trimmed);
                     best_pattern = std::move(pattern);
                     best_offset = anchor_offset;
+                    best_module_unique = (candidates.size() == 1);
                     found = true;
+                }
+                else if (trimmed > 0 && trimmed < min_span) {
+                    span_blocked = true;
                 }
             }
         }
     }
 
     if (!found) {
-        out.error = "ERROR: Signature too generic. No unique pattern found within scan range.";
+        out.error = span_blocked
+            ? std::format("ERROR: No unique pattern of at least {} bytes fits before the end of the function.", min_span)
+            : std::string("ERROR: Signature too generic. No unique pattern found within scan range.");
         return false;
     }
 
@@ -198,6 +211,7 @@ bool build_signature(const ModuleSnapshot& snap, const ZydisDecoder& decoder, UL
     if (!out.data.ce_style.empty()) out.data.ce_style.pop_back();
 
     out.anchor_offset = best_offset;
+    out.module_unique = best_module_unique;
     out.ok = true;
     return true;
 }

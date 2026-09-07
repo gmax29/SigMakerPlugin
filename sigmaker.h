@@ -37,6 +37,7 @@ struct SignatureResult {
     SignatureData data;
     int anchor_offset = 0;
     bool ok = false;
+    bool module_unique = false;
     std::string error;
 };
 
@@ -86,7 +87,7 @@ void filter_candidates(const ModuleSnapshot& snap, std::vector<ULONG_PTR>& candi
 void init_decoder(HANDLE handle, ZydisDecoder& decoder);
 
 [[nodiscard]] bool build_signature(const ModuleSnapshot& snap, const ZydisDecoder& decoder,
-    ULONG_PTR address, SignatureResult& out, ULONG_PTR lo = 0, ULONG_PTR hi = 0);
+    ULONG_PTR address, SignatureResult& out, ULONG_PTR lo = 0, ULONG_PTR hi = 0, SIZE_T min_span = 0);
 
 struct AaOptions {
     std::string address_text;

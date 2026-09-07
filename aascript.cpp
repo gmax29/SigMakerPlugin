@@ -25,9 +25,32 @@ static std::string plugin_dir() {
     return slash == std::string::npos ? std::string{} : s.substr(0, slash + 1);
 }
 
+static std::string appdata_ini() {
+    char roaming[MAX_PATH] = {};
+    if (!GetEnvironmentVariableA("APPDATA", roaming, sizeof(roaming))) return {};
+
+    const std::string dir = std::string(roaming) + "\\SigMaker";
+    CreateDirectoryA(dir.c_str(), nullptr);
+    return dir + "\\SigMaker.ini";
+}
+
 static std::string ini_path() {
+    static std::string cached;
+    static bool resolved = false;
+    if (resolved) return cached;
+    resolved = true;
+
     const std::string dir = plugin_dir();
-    return dir.empty() ? std::string{} : dir + "SigMaker.ini";
+    if (!dir.empty()) {
+        const std::string beside = dir + "SigMaker.ini";
+        if (WritePrivateProfileStringA("SigMaker", "Probe", nullptr, beside.c_str())) {
+            cached = beside;
+            return cached;
+        }
+    }
+
+    cached = appdata_ini();
+    return cached;
 }
 
 void aa_load_settings(AaOptions& opt) {
@@ -84,6 +107,7 @@ bool collect_stolen(const ModuleSnapshot& snap, const ZydisDecoder& decoder, ULO
         ZydisDecodedInstruction instr;
         ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT];
         if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(&decoder, p, avail, &instr, operands))) return false;
+        if (instr.mnemonic == ZYDIS_MNEMONIC_INT3) return false;
 
         StolenInstr si;
         si.addr = at;
@@ -153,12 +177,14 @@ std::string aa_build_script(const ModuleSnapshot& snap, const ZydisDecoder& deco
 
     b += "[ENABLE]\n\n";
 
+    const char* scope = sig.module_unique ? "unique module wide" : "unique inside this function only";
+
     if (!opt.function_symbol.empty()) {
-        b += std::format("aobscanfunction({},{},{})  // should be unique in this function\n",
-            sym, opt.function_symbol, sig.data.ce_style);
+        b += std::format("aobscanfunction({},{},{})  // {}\n",
+            sym, opt.function_symbol, sig.data.ce_style, scope);
     }
     else {
-        b += std::format("aobscanmodule({},{},{})  // should be unique\n", sym, snap.mod_name, sig.data.ce_style);
+        b += std::format("aobscanmodule({},{},{})  // {}\n", sym, snap.mod_name, sig.data.ce_style, scope);
     }
 
     if (far_jump) b += "alloc(newmem,$1000)\n\n";

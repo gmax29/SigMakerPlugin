@@ -98,7 +98,7 @@ static std::string offset_note(HANDLE handle, ULONG_PTR address, int anchor_offs
 }
 
 static bool prepare(HANDLE handle, ULONG_PTR address, ModuleSnapshot& snap, ZydisDecoder& decoder, SignatureResult& result,
-    ULONG_PTR lo = 0, ULONG_PTR hi = 0) {
+    ULONG_PTR lo = 0, ULONG_PTR hi = 0, SIZE_T min_span = 0) {
     if (address < 0x1000) {
         result.error = "ERROR: Invalid address.";
         return false;
@@ -113,7 +113,7 @@ static bool prepare(HANDLE handle, ULONG_PTR address, ModuleSnapshot& snap, Zydi
     }
 
     init_decoder(handle, decoder);
-    return build_signature(snap, decoder, address, result, lo, hi);
+    return build_signature(snap, decoder, address, result, lo, hi, min_span);
 }
 
 BOOL CE_CONV on_copy_aob(uintptr_t* selected_address) {
@@ -131,8 +131,11 @@ BOOL CE_CONV on_copy_aob(uintptr_t* selected_address) {
         return TRUE;
     }
 
-    const std::string note = offset_note(handle, address, sig.anchor_offset);
-    set_clipboard(note.empty() ? sig.data.ce_style : std::format("{}\n{}", sig.data.ce_style, note));
+    std::string out = sig.data.ce_style;
+    if (const std::string note = offset_note(handle, address, sig.anchor_offset); !note.empty()) out += "\n" + note;
+    if (!sig.module_unique) out += "\n// unique only inside the enclosing function, not module wide";
+
+    set_clipboard(out);
     return TRUE;
 }
 
@@ -250,15 +253,26 @@ BOOL CE_CONV on_aa_script(uintptr_t* selected_address) {
     std::vector<StolenInstr> stolen;
     SIZE_T stolen_len = 0;
     if (!collect_stolen(snap, decoder, address, static_cast<SIZE_T>(opt.min_bytes), stolen, stolen_len)) {
-        set_clipboard("ERROR: Could not decode enough bytes at the injection point.");
+        set_clipboard(std::format(
+            "ERROR: Cannot steal {} bytes at the injection point. The code ends in int 3 padding "
+            "or could not be decoded. Pick an earlier address or a shorter jump.", opt.min_bytes));
         return TRUE;
+    }
+
+    if (sig.data.cpp_mask.size() < stolen_len) {
+        SignatureResult wider;
+        if (!build_signature(snap, decoder, address, wider, have_fn ? fn_start : 0, have_fn ? fn_end : 0, stolen_len)) {
+            set_clipboard(wider.error);
+            return TRUE;
+        }
+        sig = std::move(wider);
     }
 
     aa_save_settings(opt);
 
     const std::string script = aa_build_script(snap, decoder, address, sig, stolen, stolen_len, opt);
     set_clipboard(script);
-    create_table_entry(opt.symbol.empty() ? opt.address_text : opt.symbol, script);
+    create_table_entry(opt.symbol, script);
     return TRUE;
 }
 

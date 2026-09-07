@@ -162,6 +162,8 @@ bool scan_snapshot(const ModuleSnapshot& snap, std::span<const PatternByte> pat,
     out.clear();
     if (pat.empty()) return false;
 
+    if (pat.size() > SCAN_CHUNK) return false;
+
     size_t lead = 0;
     while (lead < pat.size() && pat[lead].masked) ++lead;
     if (lead == pat.size()) return false;
