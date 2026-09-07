@@ -206,17 +206,32 @@ std::string aa_build_script(const ModuleSnapshot& snap, const ZydisDecoder& deco
         }
     }
     else {
-        bool relative = false;
+        for (const auto& s : stolen) b += std::format("  // {:X}: {}\n", s.addr, s.text);
+
+        // readmem copies bytes verbatim, so anything whose meaning depends on where it sits
+        // has to be reassembled at its new address instead.
+        SIZE_T run_start = 0, run_len = 0;
+
+        auto flush = [&] {
+            if (!run_len) return;
+            b += run_start ? std::format("  readmem({}+{:X},{})\n", sym, run_start, run_len)
+                           : std::format("  readmem({},{})\n", sym, run_len);
+            run_len = 0;
+        };
+
         for (const auto& s : stolen) {
-            b += std::format("  // {:X}: {}{}\n", s.addr, s.text, s.position_dependent ? "   <-- position dependent" : "");
-            if (s.position_dependent) relative = true;
+            const ULONG_PTR off = (s.addr - address) + static_cast<ULONG_PTR>(inject_off);
+            if (s.position_dependent) {
+                flush();
+                b += off ? std::format("  reassemble({}+{:X})\n", sym, off)
+                         : std::format("  reassemble({})\n", sym);
+            }
+            else {
+                if (!run_len) run_start = off;
+                run_len += s.len;
+            }
         }
-        if (relative) {
-            b += "  // WARNING: readmem copies the marked instructions byte for byte, so they\n";
-            b += "  // resolve from newmem instead of from their original address and will\n";
-            b += "  // jump or read somewhere else. Use the reassemble mode here.\n";
-        }
-        b += std::format("  readmem({},{})\n", inject, stolen_len);
+        flush();
     }
 
     b += "  jmp return\n\n";

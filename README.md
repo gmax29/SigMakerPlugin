@@ -86,6 +86,51 @@ Whatever Cheat Engine can resolve for the address: a Mono method or debug symbol
 
 ## 🔄 Changelogs
 
+### 🏷️ v1.10.1 — Audit
+
+*A pass over every source file. 1.10.0 carried the same signature and build fixes, but
+handled position dependent code in `readmem` with a warning comment instead of fixing it.
+Use 1.10.1.*
+
+* 🐛 **Fixed:** the signature could verify fewer bytes than the script overwrote.
+  The pattern starts at the **anchor**, the patch starts at the **injection point** — with
+  an anchor two bytes ahead, an 18 byte pattern only reached `address+16` and two
+  overwritten bytes stayed unchecked. `aobscanfunction` confirmed the match, `jmp far`
+  then wrote past what had been confirmed. The bound is now an absolute end address, so it
+  holds whatever anchor the builder settles on.
+* 🐛 **Fixed:** `Release|Win32` and `Debug|Win32` did not compile at all. On 32 bit
+  `SIZE_T` and `size_t` are distinct types, so `std::min` could not deduce in the scanner.
+  All four configurations build clean, with no warnings.
+* 🔄 **Changed:** `readmem` no longer copies position dependent code verbatim.
+  A `call rel32` or a RIP relative operand measures its distance from where it sits, so a
+  raw copy into `newmem` resolves somewhere else. Those instructions are now emitted as
+  `reassemble()` and the rest stays a single `readmem` run. Code with nothing relative in
+  it produces exactly the same line as before.
+* ✂️ **Fixed:** `collect_stolen` stole across the `int 3` padding into the next
+  function. It stops there now and says so instead.
+* 🏷️ **Changed:** the `[DISABLE]` block names the symbols it takes down
+  instead of clearing everything `unregistersymbol(*)` and `dealloc(*)` reach.
+* 🔍 **New:** the signature says which guarantee it carries. Uniqueness was decided
+  on two paths that checked different scopes and neither reported which one it used, so a
+  function scoped pattern looked broken in Cheat Engine's ordinary AOB scanner. AOB, C++
+  and script output now note when uniqueness holds inside the function only.
+* 💾 **Fixed:** `SigMaker.ini` was silently discarded when the DLL sat in a folder
+  that is not writable, such as `Program Files`. It falls back to
+  `%APPDATA%\SigMaker` in that case.
+* 🪟 **Fixed:** the generator dialog leaked its window when a `WM_QUIT` arrived,
+  and the message pump could spin on an already destroyed window. The window class is also
+  unregistered when the plugin is disabled; its window procedure pointed into the DLL and
+  outlived it.
+* 🧱 **Changed:** Zydis is compiled from the project folder only. The build pulled
+  the implementation from a path outside the repository while the C++ sources included the
+  copy in the root. It stays untracked and is never uploaded, only linked into the DLL.
+* 🧪 **New:** `tests/` with 30 checks against synthetic memory, runnable without
+  Cheat Engine. Covers both signature defects, the scan chunk boundaries, the `int 3` stop,
+  the `readmem` split, and 37 instruction forms in 64 and 32 bit for the position
+  dependence check.
+
+---
+
 ### 🏷️ v1.0.9 — Dark Mode
 
 * 🌙 **New:** a **Dark mode** checkbox in the generator dialog, switching live and

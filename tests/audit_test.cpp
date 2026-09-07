@@ -124,6 +124,16 @@ static void run_rel_cases(const ZydisDecoder& dec, const RelCase* cases, size_t 
     check(wrong == 0, what);
 }
 
+// Same shape, but opening with a call so the first stolen instruction is position dependent.
+static const uint8_t FUNC_REL[] = {
+    0xE8,0x00,0x00,0x00,0x00, 0x48,0x89,0xC8, 0x48,0x01,0xD8,
+    0x48,0x31,0xC9, 0x48,0x29,0xD0, 0xC3, 0xCC,0xCC,0xCC,0xCC
+};
+
+static bool has(const std::string& hay, const char* needle) {
+    return hay.find(needle) != std::string::npos;
+}
+
 static ZydisDecoder DEC;
 
 int main() {
@@ -232,6 +242,64 @@ int main() {
         st.clear(); len = 0;
         const ULONG_PTR late = BASE + 0x1000 + 15;   // 4 bytes of code left, then int 3
         check(!collect_stolen(s, DEC, late, 14, st, len), "stealing past int 3 padding is refused");
+    }
+
+    // ---- readmem must not copy position dependent code verbatim ----
+    {
+        ModuleSnapshot s = make_snap(64 * 1024);
+        plant(s, 0x1000, FUNC_REL, sizeof(FUNC_REL));
+        const ULONG_PTR addr = BASE + 0x1000;
+
+        std::vector<StolenInstr> st;
+        SIZE_T len = 0;
+        check(collect_stolen(s, DEC, addr, 14, st, len) && len == 14, "14 bytes stolen across a call");
+        check(st.size() == 4 && st[0].position_dependent && !st[1].position_dependent
+              && !st[2].position_dependent && !st[3].position_dependent,
+              "only the call is marked position dependent");
+
+        AaOptions opt;
+        opt.symbol = "INJECT";
+        opt.code_mode = 1;
+
+        SignatureResult sig;
+        sig.ok = true;
+        sig.anchor_offset = 0;
+        sig.data.ce_style = "E8 * * * * 48 89 C8";
+
+        const std::string sc = aa_build_script(s, DEC, addr, sig, st, len, opt);
+        check(has(sc, "reassemble(INJECT)"), "the call is reassembled instead of copied");
+        check(has(sc, "readmem(INJECT+5,9)"), "the rest stays one readmem run, at the right offset");
+        check(!has(sc, "WARNING"), "no warning comment is emitted");
+        check(!has(sc, "position dependent"), "no position dependent marker is emitted");
+
+        // The pattern may start before the injection point, so the offsets have to follow it.
+        sig.anchor_offset = -3;
+        const std::string sc2 = aa_build_script(s, DEC, addr, sig, st, len, opt);
+        check(has(sc2, "reassemble(INJECT+3)"), "reassemble offset follows the anchor");
+        check(has(sc2, "readmem(INJECT+8,9)"), "readmem offset follows the anchor");
+    }
+
+    // ---- code with nothing relative must stay exactly as it was ----
+    {
+        ModuleSnapshot s = make_snap(64 * 1024);
+        plant(s, 0x1000, FUNC, sizeof(FUNC));
+        const ULONG_PTR addr = BASE + 0x1000;
+
+        std::vector<StolenInstr> st;
+        SIZE_T len = 0;
+        check(collect_stolen(s, DEC, addr, 14, st, len) && len == 15, "15 bytes stolen, all register only");
+
+        AaOptions opt;
+        opt.symbol = "INJECT";
+        opt.code_mode = 1;
+
+        SignatureResult sig;
+        sig.ok = true;
+        sig.anchor_offset = 0;
+
+        const std::string sc = aa_build_script(s, DEC, addr, sig, st, len, opt);
+        check(has(sc, "readmem(INJECT,15)"), "one readmem still covers the whole span");
+        check(!has(sc, "reassemble("), "nothing is reassembled when nothing needs it");
     }
 
     std::printf("\n%s (%d failing)\n", failures ? "FAILED" : "ALL PASSED", failures);
